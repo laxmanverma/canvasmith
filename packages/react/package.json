@@ -1,6 +1,6 @@
 {
   "name": "@canvasmith/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ready-made React UI (and framework-free mount()) for @canvasmith/core.",
   "type": "module",
   "main": "dist/index.js",

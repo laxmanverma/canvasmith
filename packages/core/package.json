@@ -1,6 +1,6 @@
 {
   "name": "@canvasmith/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Headless image-editor engine on Fabric.js: paint/retouch tools, selections, layers, history, crop, AI-provider seam, import bridge.",
   "type": "module",
   "main": "src/index.js",
