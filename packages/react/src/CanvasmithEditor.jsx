@@ -709,12 +709,37 @@ function readProps(ed) {
   };
 }
 
+/* Keeps a collapsing panel's content mounted until its width transition has finished; expanding
+   mounts it at once. Without this the panel empties on the first frame and the slide animates an
+   empty box. */
+function useLinger(hidden, ms) {
+  const [on, setOn] = useState(!hidden);
+  useEffect(() => {
+    if (!hidden) { setOn(true); return undefined; }
+    const t = setTimeout(() => setOn(false), ms);
+    return () => clearTimeout(t);
+  }, [hidden, ms]);
+  return !hidden || on;
+}
+
 const THEMES = {
   // Same palette as the vanilla demo's :root tokens — neutral graphite surfaces, blue accent.
   // (the visual refresh: neutral zinc greys, standard blue — keep in step with the CSS token block)
   dark: { bg: '#141416', panel: '#1b1b1e', line: 'rgba(255,255,255,.08)', ink: '#ececee', dim: '#a1a1aa', accent: '#3b82f6', accentInk: '#fff', stage: '#111113' },
   light: { bg: '#f4f4f5', panel: '#ffffff', line: 'rgba(9,9,11,.09)', ink: '#18181b', dim: '#52525b', accent: '#2563eb', accentInk: '#fff', stage: '#e8e8eb' },
 };
+
+/* The `theme` prop is either flat ({ accent: '#…' }, applied in both modes — the original contract)
+   or per-mode ({ light: {…}, dark: {…} }, optionally mixed with flat keys). Any --cm-* token can be
+   named, with or without the prefix's dash style: 'panel-2', 'dim-2', 'line-soft', 'accent-ink'… */
+function resolveTheme(mode, theme) {
+  const { light, dark, ...flat } = theme || {};
+  const base = THEMES[mode] || THEMES.dark;
+  const per = (mode === 'light' ? light : dark) || {};
+  const vars = { ...base, 'accent-ink': base.accentInk, ...flat, ...per };
+  delete vars.accentInk;
+  return vars;
+}
 
 const CSS = `
 /* Theme tokens: dark is the default/fallback (also applied explicitly via [data-cm-mode=dark] so
@@ -735,7 +760,7 @@ const CSS = `
   --cm-shadow-sm:0 1px 2px rgba(40,34,22,.06); --cm-shadow-md:0 8px 22px rgba(40,34,22,.08);
 }
 .cm-root{
-  display:grid;grid-template-columns:56px 290px 1fr 322px;grid-template-rows:48px 1fr;height:100%;min-height:480px;
+  display:grid;grid-template-columns:56px 290px 1fr 322px;grid-template-rows:48px 1fr;height:100%;min-height:480px;transition:grid-template-columns .18s cubic-bezier(.4,0,.2,1);
   background:var(--cm-bg);color:var(--cm-ink);font:13px/1.45 "Hanken Grotesk",system-ui,sans-serif;position:relative}
 .cm-root[data-left-collapsed=true]{grid-template-columns:56px 0px 1fr 322px}
 .cm-root[data-side-collapsed=true]{grid-template-columns:56px 290px 1fr 0px}
@@ -782,7 +807,7 @@ const CSS = `
 .cm-center>.cm-stage{flex:1;min-height:0}
 .cm-tabbar{flex:none;display:flex;align-items:flex-end;gap:2px;height:42px;padding:0 10px;background:var(--cm-panel);border-bottom:1px solid var(--cm-line);overflow-x:auto;scrollbar-width:none;position:relative;z-index:10}
 .cm-tabbar::-webkit-scrollbar{display:none}
-.cm-doctab{flex:none;display:flex;align-items:center;gap:6px;max-width:200px;height:34px;margin-bottom:-1px;padding:0 6px 0 12px;border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;background:transparent;color:var(--cm-dim-2);font-size:12px;font-weight:500;cursor:pointer;user-select:none}
+.cm-doctab{flex:none;display:flex;align-items:center;gap:6px;max-width:200px;height:34px;margin-bottom:-1px;padding:0 6px 0 12px;border:1px solid transparent;border-bottom:none;border-radius:3px 3px 0 0;background:transparent;color:var(--cm-dim-2);font-size:12px;font-weight:500;cursor:pointer;user-select:none}
 .cm-doctab:hover{color:var(--cm-ink);background:var(--cm-ctl)}
 .cm-doctab[data-on=true]{background:var(--cm-stage);color:var(--cm-ink);border-color:var(--cm-line);box-shadow:inset 0 2px 0 var(--cm-accent)}
 .cm-dt-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -843,7 +868,13 @@ const CSS = `
 .cm-lp-engine{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--cm-ink);margin-top:6px}
 .cm-btn-spin{width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:cm-spin .7s linear infinite;flex:none}
 @keyframes cm-spin{to{transform:rotate(360deg)}}
-.cm-root[data-left-collapsed=true] .cm-left{padding:0;width:0;border:0}
+.cm-left{transition:padding .18s cubic-bezier(.4,0,.2,1),border-right-width .18s cubic-bezier(.4,0,.2,1)}
+.cm-side{transition:padding .18s cubic-bezier(.4,0,.2,1),border-left-width .18s cubic-bezier(.4,0,.2,1)}
+/* Content is held at full width so the collapsing edge clips it instead of reflowing it. */
+.cm-left>*{min-width:289px}
+.cm-side>*{min-width:293px}
+.cm-side>.cm-side-body{min-width:321px}
+.cm-root[data-left-collapsed=true] .cm-left{padding:0;border-right-width:0}
 .cm-side{border-left:1px solid var(--cm-line);background:var(--cm-panel);overflow:hidden;padding:14px;transition:padding .15s;display:flex;flex-direction:column;min-height:0;position:relative}
 .cm-side-body{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;margin:0 -14px;padding:0 14px}
 .cm-left{position:relative}
@@ -853,7 +884,7 @@ const CSS = `
 .cm-scroll-cue[data-show=true]{opacity:1;pointer-events:auto}
 .cm-scroll-cue svg{color:var(--cm-dim-2);animation:cm-cue-bob 1.4s ease-in-out infinite}
 @keyframes cm-cue-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}
-.cm-root[data-side-collapsed=true] .cm-side{padding:0;width:0;border:0}
+.cm-root[data-side-collapsed=true] .cm-side{padding:0;border-left-width:0}
 .cm-left h4, .cm-side h4{margin:8px 0 6px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--cm-dim)}
 .cm-tabs{display:flex;align-items:stretch;gap:4px;margin:-14px -14px 14px;padding:0 10px;border-bottom:1px solid var(--cm-line-soft);flex:none}
 /* Text tabs on one row: accent underline on the active one, a small accent dot on AI. No "color"
@@ -1650,6 +1681,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const [sideTab, setSideTab] = useState('layer');
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const leftShown = useLinger(leftCollapsed, 220), sideShown = useLinger(sideCollapsed, 220);
   // Left panel tab: 'layers' | 'ai' (remembered per browser — a convenience, never required)
   const [leftTab, setLeftTabState] = useState(() => { try { return localStorage.getItem('cm-left-tab') === 'ai' ? 'ai' : 'layers'; } catch (e) { return 'layers'; } });
   const setLeftTab = (t) => { setLeftTabState(t); try { localStorage.setItem('cm-left-tab', t); } catch (e) {} };
@@ -1705,7 +1737,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
 
   useEffect(() => {
     const f = fabric || (typeof window !== 'undefined' && window.fabric);
-    const ed = new Editor({ fabric: f, canvasEl: canvasRef.current, width, height, openCvUrl, voidColor: (THEMES[mode_] || THEMES.dark).stage });
+    const ed = new Editor({ fabric: f, canvasEl: canvasRef.current, width, height, openCvUrl, voidColor: resolveTheme(mode_, theme).stage });
     edRef.current = ed;
     // Overlay chrome: marching-ants selection outline, crop scrim/thirds/handles/dimension
     // readout, hover-select preview, pen in-progress path, and Figma-style smart guides while
@@ -1924,9 +1956,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       if (gradAxis) drawGradientAxis(ctx, gradAxis, v[0]);
       if (brushCursor) drawBrushCursor(ctx, brushCursor, v[0]);
       // Pen path being drawn / vector edit mode — core's drawPenOverlay, shared with the demo.
-      if (penBuild) drawPenOverlay(ctx, penBuild, v[0], { accent: '#4f8ff0' });
+      if (penBuild) drawPenOverlay(ctx, penBuild, v[0], { accent: ed.accent });
       // magic wand / object select still computing: spinning ring at the pointer
-      if (pickBusy) drawPickSpinner(ctx, pickBusy, v[0], { accent: '#4f8ff0' });
+      if (pickBusy) drawPickSpinner(ctx, pickBusy, v[0], { accent: ed.accent });
       ctx.restore();
     };
     // Only for real on-screen redraws. Fabric also fires after:render for OFFSCREEN renders (each
@@ -2141,7 +2173,10 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       if (!fittedRef.current) { if (fitRef.current && fitRef.current()) fittedRef.current = true; return; }
       e.fc.setDimensions({ width: stage.clientWidth, height: stage.clientHeight });
       e.fc.calcOffset();
-      e.fc.requestRenderAll();
+      /* Synchronous, not requestRenderAll: setDimensions blanks the canvas, and a deferred redraw
+         shows that blank for a frame. While a side panel slides open/shut the observer fires every
+         frame, so the artboard strobed. Drawing here lands before the browser paints. */
+      e.fc.renderAll();
     });
     ro.observe(stage);
     return () => ro.disconnect();
@@ -2182,9 +2217,12 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // Keeps the off-canvas mask (see Editor's constructor) matching the stage colour when the
   // light/dark toggle flips — otherwise the mask would show a mismatched patch around the
   // artboard after a theme switch instead of blending into the new stage background.
+  const resolvedTheme = resolveTheme(mode_, theme);
+  const voidColor = resolvedTheme.stage, accentColor = resolvedTheme['accent-fill'] || resolvedTheme.accent;
+  useEffect(() => { if (edRef.current) edRef.current.setAccent(accentColor); }, [accentColor]);
   useEffect(() => {
-    if (edRef.current) edRef.current.setVoidColor((THEMES[mode_] || THEMES.dark).stage);
-  }, [mode_]);
+    if (edRef.current) edRef.current.setVoidColor(voidColor);
+  }, [voidColor]);
 
 
   const ed = () => edRef.current;
@@ -3181,9 +3219,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   };
   const onLayerDragEnd = () => { setDragLayerId(null); setDragOverId(null); };
 
-  const palette = THEMES[mode_] || THEMES.dark;
-  const style = Object.fromEntries(Object.entries({ ...palette, 'accent-ink': palette.accentInk, ...theme })
-    .filter(([k]) => k !== 'accentInk').map(([k, v]) => ['--cm-' + k, v]));
+  const style = Object.fromEntries(Object.entries(resolveTheme(mode_, theme)).map(([k, v]) => ['--cm-' + k, v]));
   /* Left panel (matches the vanilla demo's #left-panel): Layers / AI Vision tabs; the Layers view
      is a toolbar + the layer list + a contextual tool dock that only opens when the active tool has
      options or a pixel selection / clipped layer / mask edit is live — so with plain Select the
@@ -3804,7 +3840,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         <Icon name="chevron" size={13} />
       </button>
       <div className="cm-left" ref={leftRef}>
-        {!leftCollapsed && (
+        {leftShown && (
           <div className="cm-lp">
             <div className="cm-lp-tabs" role="tablist">
               <button className="cm-lp-tab" role="tab" aria-selected={leftTab === 'layers'} onClick={() => setLeftTab('layers')}><Icon name="layers" size={14} />Layers<span className="cm-lp-count">{layers.length}</span></button>
@@ -3989,7 +4025,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         <Icon name="chevron" size={13} />
       </button>
       <div className="cm-side" ref={sideRef}>
-        {!sideCollapsed && reviewOn && (() => {
+        {sideShown && reviewOn && (() => {
           const ar = activeRegion();
           const polyRegionCount = regionObjects().filter(o => o.type === 'polygon').length;
           const mergeCount = selectedRegions().length;
@@ -4100,7 +4136,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
             </div>
           );
         })()}
-        {!sideCollapsed && !reviewOn && (
+        {sideShown && !reviewOn && (
           <React.Fragment>
             <div className="cm-tabs">
               <button data-on={sideTab === 'layer'} onClick={() => setSideTab('layer')}>Properties</button>

@@ -25,9 +25,9 @@
     /* Soft warm paper, not stark white — panel is a gentle off-white tinted to match bg's warmth
        (was pure #ffffff sitting directly against a beige page, which read as glare) and bg/stage
        are a touch deeper so the whole surface stack sits lower in brightness. */
-    --bg:#ece6d9; --panel:#faf7f0; --panel-2:#f1ebdd; --line:rgba(30,26,18,.11); --line-soft:rgba(30,26,18,.07);
-    --ink:#26221c; --dim:#5e594f; --dim-2:#8c867a; --accent:#2f6fdb; --accent-ink:#ffffff;
-    --stage:#e4ddcc; --danger:#c73434; --ai-green:#15803d; --ai-violet-ink:#6d28d9; --ai-blue:#2563eb; --ai-violet:#7c3aed; --ai-teal:#0f766e;
+    --bg:#f3efe7; --panel:#ffffff; --panel-2:#f5f1ea; --line:rgba(30,26,18,.12); --line-soft:rgba(30,26,18,.07);
+    --ink:#1c1913; --dim:#5e594f; --dim-2:#8c867a; --accent:#6750a4; --accent-ink:#ffffff;
+    --stage:#e8e2d6; --danger:#c73434; --ai-green:#15803d; --ai-violet-ink:#5a4496; --ai-blue:#6750a4; --ai-violet:#6750a4; --ai-teal:#0f766e;
     --shadow-sm:0 1px 2px rgba(40,34,22,.06); --shadow-md:0 8px 22px rgba(40,34,22,.08); --shadow-lg:0 24px 60px rgba(40,34,22,.2), 0 1px 0 rgba(255,255,255,.5) inset;
     --ring: 0 0 0 1px var(--panel), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
   }
@@ -158,8 +158,15 @@
     opacity:0; pointer-events:none; transition:opacity .15s }
   #right-scroll-cue[data-show=true] { opacity:1; pointer-events:auto }
   #right-scroll-cue svg { color:var(--dim-2); animation:cue-bob 1.4s ease-in-out infinite }
-  main[data-left-collapsed=true] #left-panel { padding:0; width:0 }
-  main[data-right-collapsed=true] #right-panel { padding:0; width:0 }
+  /* Collapse animates with the grid column (see `main`): the panel keeps its width instead of snapping
+     to 0, its content is held at full width so the edge clips it away rather than reflowing, and the
+     border/padding ease out with the column so nothing pops. */
+  #left-panel { transition:padding .18s cubic-bezier(.4,0,.2,1), border-right-width .18s cubic-bezier(.4,0,.2,1) }
+  #right-panel { transition:padding .18s cubic-bezier(.4,0,.2,1), border-left-width .18s cubic-bezier(.4,0,.2,1) }
+  #left-panel > * { min-width:289px }
+  #right-panel > * { min-width:293px }
+  main[data-left-collapsed=true] #left-panel { padding:0; border-right-width:0 }
+  main[data-right-collapsed=true] #right-panel { padding:0; border-left-width:0 }
   /* scrollbars: thin, themed, unobtrusive — default OS scrollbars clash with a dark flat-panel UI */
   nav::-webkit-scrollbar, #left-panel *::-webkit-scrollbar, #right-panel *::-webkit-scrollbar { width:8px; height:8px }
   nav::-webkit-scrollbar-track, #left-panel *::-webkit-scrollbar-track, #right-panel *::-webkit-scrollbar-track { background:transparent }
@@ -714,6 +721,7 @@
   .export-sep { height:1px; background:var(--line); margin:5px 0 }
   .export-hint { margin-left:auto; padding-left:10px; font-size:9.5px; color:var(--dim-2); font-weight:500; white-space:nowrap }
   .export-menu-item { display:flex; align-items:center; gap:6px; white-space:nowrap }
+  .export-menu-item[hidden] { display:none }
   .save-note { font-size:11px; color:var(--dim-2); white-space:nowrap; flex:none; display:flex; align-items:center; gap:5px }
   .save-note::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--dim-2) }
   .save-note[data-warn=true] { color:#e0a02a }
@@ -738,10 +746,11 @@
     --ring:0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
   }
   :root[data-mode="light"] {
-    --bg:#f4f4f5; --panel:#ffffff; --panel-2:#f1f1f3; --line:rgba(9,9,11,.09); --line-soft:rgba(9,9,11,.06);
-    --ink:#18181b; --dim:#52525b; --dim-2:#6b6b75; --accent:#2563eb; --accent-fill:#2563eb; --accent-ink:#ffffff; --stage:#e8e8eb;
-    --ctl:#f1f1f3; --ctl-hover:#e9e9ec; --track-bg:#d9d9de;
-    --shadow-sm:0 1px 2px rgba(9,9,11,.06); --shadow-md:0 6px 20px rgba(9,9,11,.08); --shadow-lg:0 16px 48px rgba(9,9,11,.14), 0 0 0 1px rgba(9,9,11,.06);
+    /* Fastrr Studio palette (same tokens as ditto-fe's light theme): cream page, white panels, violet accent. */
+    --bg:#f3efe7; --panel:#ffffff; --panel-2:#f5f1ea; --line:rgba(30,26,18,.12); --line-soft:rgba(30,26,18,.07);
+    --ink:#1c1913; --dim:#5e594f; --dim-2:#8c867a; --accent:#6750a4; --accent-fill:#6750a4; --accent-ink:#ffffff; --stage:#e8e2d6;
+    --ctl:#f1ece3; --ctl-hover:#e9e3d7; --track-bg:#ddd6c8;
+    --shadow-sm:0 1px 2px rgba(40,34,22,.05); --shadow-md:0 8px 22px rgba(40,34,22,.10); --shadow-lg:0 16px 48px rgba(40,34,22,.16), 0 0 0 1px rgba(40,34,22,.06);
     --ring:0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
   }
   body { font:12.5px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; letter-spacing:-.003em; font-feature-settings:"cv11","ss01" }
@@ -882,7 +891,7 @@
   #center > #stage { flex:1; min-height:0 }
   #doctabs { flex:none; display:flex; align-items:flex-end; gap:2px; height:42px; padding:0 10px; background:var(--panel); border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:none; position:relative; z-index:10 }
   #doctabs::-webkit-scrollbar { display:none }
-  .doctab { flex:none; display:flex; align-items:center; gap:6px; max-width:200px; height:34px; margin-bottom:-1px; padding:0 6px 0 12px; border:1px solid transparent; border-bottom:none; border-radius:8px 8px 0 0;
+  .doctab { flex:none; display:flex; align-items:center; gap:6px; max-width:200px; height:34px; margin-bottom:-1px; padding:0 6px 0 12px; border:1px solid transparent; border-bottom:none; border-radius:3px 3px 0 0;
     background:transparent; color:var(--dim); font-size:12px; font-weight:500; cursor:pointer; user-select:none }
   .doctab:hover { color:var(--ink); background:var(--ctl) }
   .doctab[data-on=true] { background:var(--stage); color:var(--ink); border-color:var(--line); box-shadow:inset 0 2px 0 var(--accent) }
@@ -1765,7 +1774,7 @@ ICON_PATHS.eyeOpen = EYE_OPEN; ICON_PATHS.eyeOff = EYE_OFF;
 
 /* ── theme toggle: swaps the light/dark palette via a data-mode attribute ── */
 const themeBtn = document.getElementById('theme-toggle');
-const applyMode = m => { document.documentElement.dataset.mode = m; themeBtn.innerHTML = iconSVG(m === 'dark' ? 'sun' : 'moon'); ed.setVoidColor(stageVoidColor()); };
+const applyMode = m => { document.documentElement.dataset.mode = m; themeBtn.innerHTML = iconSVG(m === 'dark' ? 'sun' : 'moon'); ed.setVoidColor(stageVoidColor()); ed.setAccent(getComputedStyle(document.documentElement).getPropertyValue('--accent-fill').trim() || undefined); };
 applyMode(document.documentElement.dataset.mode || 'dark');
 themeBtn.onclick = () => applyMode(document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark');
 
@@ -2747,7 +2756,9 @@ new ResizeObserver(() => {
   if (!stageEl.clientWidth) return;
   ed.fc.setDimensions({ width: stageEl.clientWidth, height: stageEl.clientHeight });
   ed.fc.calcOffset();
-  ed.fc.requestRenderAll();
+  // Synchronous: setDimensions blanks the canvas and a deferred redraw would show that blank for a
+  // frame — visible as the artboard strobing while a side panel slides open/shut.
+  ed.fc.renderAll();
 }).observe(stageEl);
 function refreshZoomUI() {
   zoomPctBtn.textContent = Math.round((ed.fc.getZoom() || 1) * 100) + '%';

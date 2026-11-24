@@ -115,7 +115,7 @@
 <div class="layout rel">
 <nav class="toc" id="toc" aria-label="Versions">
   <h6>Versions</h6>
-  <a href="#unreleased">Unreleased</a>
+  <a href="#v1.7.0">1.7.0 <span style="opacity:.6">· Nov 24</span></a>
   <a href="#v1.6.0">1.6.0 <span style="opacity:.6">· Oct 5</span></a>
   <a href="#v1.5.0">1.5.0 <span style="opacity:.6">· Oct 1</span></a>
   <a href="#v1.4.0">1.4.0 <span style="opacity:.6">· Sep 22</span></a>
@@ -133,11 +133,19 @@
 <h1>Release notes</h1>
 <p class="lead">Every Canvasmith release, newest first. The project started at <b>1.0.0</b>; each minor version groups a milestone of features, and patch versions are fixes and polish.</p>
 
-<section class="release rel" id="unreleased">
-  <div class="rel-head"><h2>Unreleased</h2><span class="pill warn">In progress</span><span class="rel-date">on branch <code>bug_fixes_and_ux_enhancement</code></span></div>
-  <p class="rel-title">Offline background removal with touch-ups, and this documentation.</p>
+<section class="release rel" id="v1.7.0">
+  <div class="rel-head"><h2>1.7.0</h2><span class="pill">Latest</span><span class="rel-date">November 24, 2026</span></div>
+  <p class="rel-title">Colour picker, boolean shapes, multi-canvas tabs, voice control and offline background removal.</p>
   <h4 class="added">Added</h4>
   <ul>
+    <li><b>Adobe-style colour picker</b> with a saturation / brightness field, hue and opacity sliders, hex input and an eyedropper, used for fill, border, text and the canvas background.</li>
+    <li><b>Blend-mode picker</b> with a live preview, <b>colour match</b> to carry the colour feel of one image onto another, and a <b>Sharpen</b> filter.</li>
+    <li><b>Boolean shape operations</b> (union, subtract, intersect, exclude) on the vendored <code>polygon-clipping</code> engine.</li>
+    <li><b>Multi-canvas tabs:</b> keep several documents open in a tab strip, in both shells.</li>
+    <li><b>Frames per page</b> with labels and overlay holes; the active frame sits at the origin.</li>
+    <li><b>Command palette</b> to search and run any editor action, plus a shared dialog component and a font manager.</li>
+    <li><b>Voice control</b> using the Web Speech API. One command catalog drives the grammar, the LLM prompt and validation; the mic sits in the zoom pill of both shells.</li>
+    <li><b>Claude plugin</b> (<code>plugins/claude-plugin</code>) that opens Canvasmith inside a conversation.</li>
     <li><b>Offline Remove BG.</b> A new worker pipeline (<code>cutout</code> / <code>cutRefine</code>) cuts the subject out without any AI key: a plain backdrop is keyed out by colour, anything else is auto-seeded and refined with GrabCut along the edge, with soft, colour-decontaminated edges. The result is still a layer mask.</li>
     <li><b>Keep / Remove touch-ups</b> for offline cut-outs: paint over what to keep or remove and the cut re-runs around your stroke (<code>setMaskRefine</code>, <code>canRefineCutout</code>).</li>
     <li>A free offline <b>Remove BG</b> button stays one click away when an AI key is set.</li>
@@ -146,12 +154,14 @@
   </ul>
   <h4 class="improved">Improved</h4>
   <ul>
-    <li>Browser test coverage for the offline cut-out and refine flow in both the vanilla and React shells.</li>
+    <li>Border and stroke options, crop, selection, stickers, shapes and the context menu refined, with extended keybindings.</li>
+    <li>Session autosave and export handle tabs and frames; AI registry and Gemini provider updated.</li>
+    <li>Browser test coverage for the offline cut-out and refine flow, and for the new features, in both the vanilla and React shells.</li>
   </ul>
 </section>
 
 <section class="release rel" id="v1.6.0">
-  <div class="rel-head"><h2>1.6.0</h2><span class="pill">Latest</span><span class="rel-date">October 5, 2026</span></div>
+  <div class="rel-head"><h2>1.6.0</h2><span class="rel-date">October 5, 2026</span></div>
   <p class="rel-title">Pen tool, right-click menu and border options.</p>
   <h4 class="added">Added</h4>
   <ul>

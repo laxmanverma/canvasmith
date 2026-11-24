@@ -263,6 +263,7 @@ export class Editor {
       // instead of getting dimmed along with the content underneath it.
       controlsAboveOverlay: true,
     });
+    this.accent = '#4f8ff0';       // working-frame outline/label + pen overlay colour; hosts theme it via setAccent()
     this._voidColor = voidColor;   // see setVoidColor() / the off-canvas mask below
     this._background = background; // the artboard's starting page colour — reset() paints it back after fc.clear() nulls it
     // fabric.Canvas's OWN _renderBackground paints fc.backgroundColor across (0,0)-(fc.width,
@@ -3700,6 +3701,7 @@ export class Editor {
   /* The off-canvas mask's fill colour (see the constructor) — a host should call this whenever
      its own stage background changes (e.g. a light/dark theme toggle) so the mask keeps matching
      the surrounding chrome instead of showing a mismatched patch around the artboard. */
+  setAccent(color) { this.accent = color || '#4f8ff0'; this.fc.requestRenderAll(); }
   setVoidColor(color) {
     this._voidColor = color;
     this.fc.requestRenderAll();
@@ -5651,7 +5653,7 @@ export class Editor {
         const active = f.id === this._frameActive, lw = active ? 2 : 1, o = lw / 2;
         ctx.save();
         ctx.lineWidth = lw;
-        ctx.strokeStyle = active ? '#4f8ff0' : 'rgba(128,128,136,.45)';
+        ctx.strokeStyle = active ? this.accent : 'rgba(128,128,136,.45)';
         ctx.strokeRect(tl.x - o, tl.y - o, wpx + lw, r.h * v[3] + lw);
         ctx.restore();
       }
@@ -5659,7 +5661,7 @@ export class Editor {
       let text = name;
       while (text.length > 1 && ctx.measureText(text).width > Math.max(30, wpx)) text = text.slice(0, -2) + '…';
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = f.id === this._frameActive ? '#4f8ff0' : '#918f8c';
+      ctx.fillStyle = f.id === this._frameActive ? this.accent : '#918f8c';
       ctx.fillText(text, tl.x, tl.y - 7);
       this._frameLabels.push({ id: f.id, x: tl.x - 2, y: tl.y - 22, w: tw + 4, h: 20 });
     });
