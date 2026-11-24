@@ -29,7 +29,7 @@
   #editor .cm-top .cm-btn { white-space: nowrap; }
   @media (max-width: 999px) {
     #editor .cm-top { gap: 6px; }
-    #editor .cm-top > strong, #editor .cm-top .cm-btn[title^="Search tools"] { display: none; }
+    #editor .cm-top > strong, #editor .cm-top .cm-btn[title^="Search tools"] { display: none !important; } /* brand has an inline display:flex */
   }
   #toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1000; max-width: calc(100% - 32px);
            padding: 8px 14px; border-radius: 8px; background: #1b1b20; color: #f5f3ee; font: 500 12px/1.4 system-ui, sans-serif;

@@ -115,7 +115,8 @@ export function installKeybindings(editor, target = (typeof document !== 'undefi
 
     // Cut (⌘X) and Copy as PNG (⇧⌘C) — the right-click menu lists both.
     if (mod && key === 'x' && !e.shiftKey) {
-      if (editor.fc.getActiveObject()) { e.preventDefault(); editor.cutSelection(); }
+      if (editor.selection && editor._pixelSourceLayer()) { e.preventDefault(); editor.cutSelectedPixels(); }
+      else if (editor.fc.getActiveObject()) { e.preventDefault(); editor.cutSelection(); }
       return;
     }
     if (mod && e.shiftKey && key === 'c') {
@@ -125,7 +126,9 @@ export function installKeybindings(editor, target = (typeof document !== 'undefi
 
     // Copy/paste — clipboard lives on the Editor (see copySelection/pasteClipboard).
     if (mod && key === 'c') {
-      if (editor.fc.getActiveObject()) { e.preventDefault(); editor.copySelection(); }
+      // A pixel selection wins over the object: ⌘C on a lasso copies what's inside it.
+      if (editor.selection && editor._pixelSourceLayer()) { e.preventDefault(); editor.copySelectedPixels(); }
+      else if (editor.fc.getActiveObject()) { e.preventDefault(); editor.copySelection(); }
       return;
     }
     if (mod && key === 'v') {
@@ -217,8 +220,15 @@ export function installKeybindings(editor, target = (typeof document !== 'undefi
 
     // Arrow-key nudge: 1px, or 10px with Shift — moves the active object/activeSelection.
     if (e.key.startsWith('Arrow')) {
+      // with a pixel selection and a selection tool active, the arrows move the selection (not a layer)
+      if (editor.selection && !editor.fc.getActiveObject() && editor.nudgeSelection) {
+        const st = e.shiftKey ? 10 : 1;
+        const sx = e.key === 'ArrowLeft' ? -st : e.key === 'ArrowRight' ? st : 0, sy = e.key === 'ArrowUp' ? -st : e.key === 'ArrowDown' ? st : 0;
+        if (sx || sy) { e.preventDefault(); editor.nudgeSelection(sx, sy); return; }
+      }
       const active = editor.fc.getActiveObject();
-      if (!active || active.locked) return;
+      // locked, or pinned in place (an adjustment layer — see _recomputeAdjustmentLayers)
+      if (!active || active.locked || (active.lockMovementX && active.lockMovementY)) return;
       const step = e.shiftKey ? 10 : 1;
       const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
       const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;

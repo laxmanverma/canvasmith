@@ -244,4 +244,45 @@ export class GeminiProvider {
     if (arr && !Array.isArray(arr)) arr = arr.regions || arr.elements || arr.items || [];
     return (Array.isArray(arr) ? arr : []).map(toRegion).filter(Boolean);
   }
+
+  /* Where is `description` in the image? Same box_2d convention as detectRegions; null if absent. */
+  async locateObject(imageDataURL, description) {
+    const key = this._need();
+    const img = dataUrlParts(imageDataURL);
+    if (!img) throw new Error('locateObject needs a dataURL image.');
+    const res = await call(key, TEXT_MODEL, {
+      contents: [{ parts: [
+        { text: 'Find ' + JSON.stringify(String(description || '').slice(0, 120)) + ' in this image. Give ONE tight bounding box around the whole thing '
+              + '(if several match, the most prominent one). Reply with JSON only: {"box_2d":[ymin,xmin,ymax,xmax]} on a 0-1000 grid, '
+              + 'or {"box_2d":null} if it is not in the image.' },
+        { inlineData: { mimeType: img.mime, data: img.b64 } },
+      ] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+    });
+    let o;
+    try { o = JSON.parse(firstText(res).replace(/```json|```/g, '').trim()); } catch (e) { throw new Error('The model returned an unreadable location.'); }
+    if (Array.isArray(o)) o = o[0];
+    const r = toRegion({ box_2d: o && o.box_2d });
+    return r ? r.bbox : null;
+  }
+
+  /* Free-form request -> editor commands. The model only chooses from a closed action list and the
+     caller (voice.js) re-validates every field, so a bad reply can't do anything off-list. */
+  async interpretCommand(text, ctx = {}) {
+    const key = this._need();
+    const res = await call(key, TEXT_MODEL, {
+      contents: [{ parts: [{ text: 'You turn a spoken request for an image editor into editor commands. '
+        + 'Reply with a JSON array only (1-5 commands, executed in order); reply [] if the request is not an editor command. '
+        + 'Each command is {"action":"<id>", ...args} using ONLY these actions and args ("?" = optional):\n' + (ctx.catalog || '') + '\n'
+        + 'Prefer the most specific action. AI actions (aiGenerate, aiEdit, aiBackground, replaceObject, aiRemoveObject, aiExtend) cost a model call and change pixels: use them ONLY when the user explicitly asks to generate, replace, edit or extend something with AI/photographic content. '
+        + 'Plain drawing requests ("draw/add/make a circle, square, star, line, heart, text, sticker") are NEVER AI: use addShape, addSticker, a pen shape, or the matching tool. A leftover selection or earlier AI command does not change that. Colours are #rrggbb. Current editor state: ' + JSON.stringify(ctx.state || {}) + '. '
+        + 'Request: ' + JSON.stringify(String(text || '').slice(0, 400)) }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+    });
+    const out = firstText(res).replace(/```json|```/g, '').trim();
+    let arr;
+    try { arr = JSON.parse(out); } catch (e) { throw new Error('The model returned an unreadable command.'); }
+    if (arr && !Array.isArray(arr)) arr = arr.commands || [arr];
+    return Array.isArray(arr) ? arr : [];
+  }
 }

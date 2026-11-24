@@ -136,6 +136,13 @@ export class CvEngine {
 
   async cutoutFree() { await this._call('cutfree', {}); }
 
+  /* Re-bases the last cutout's touch-up state on `alpha` (Uint8Array W*H, 0-255, cutout px) — the
+     mask an undo/redo just restored. Resolves true when there was a cutout of that size to sync. */
+  async cutoutSync(alpha) {
+    const r = await this._call('cutsync', { alpha }, [alpha.buffer]);
+    return !!(r && r.ok);
+  }
+
   destroy() {
     if (this._worker) { try { this._worker.terminate(); } catch (e) { } }
     this._worker = null; this._bootState = 'idle'; this._bootWait = null;

@@ -59,10 +59,11 @@ const SHAPES = {
   arrowBlock: { kind: 'path', d: 'M10,38 H62 V26 L90,50 L62,74 V62 H10 Z' },
   chevron: { kind: 'path', d: 'M30,20 L60,50 L30,80 M52,20 L82,50 L52,80', stroke: true },
   arrowDouble: { kind: 'path', d: 'M18,50 L36,34 V44 H64 V34 L82,50 L64,66 V56 H36 V66 Z' },
-  arrowCurve: { kind: 'path', d: 'M16,74 C30,42 56,30 78,34 L78,34 L84,20 L94,32 L78,42 Z', stroke: false },
+  // a curved shaft (outer edge out, inner edge back) with a real arrowhead — it used to close straight back into a leaf
+  arrowCurve: { kind: 'path', d: 'M12,80 C20,48 44,32 68,30 V18 L92,38 L68,58 V46 C48,48 32,60 28,84 Z' },
   arrowUp: { kind: 'path', d: 'M42,86 V42 H30 L50,14 L70,42 H58 V86 Z' },
   arrowDown: { kind: 'path', d: 'M42,14 V58 H30 L50,86 L70,58 H58 V14 Z' },
-  arrowLeft: { kind: 'path', d: 'M58,14 H42 V26 L14,50 L42,74 V86 H58 Z' },
+  arrowLeft: { kind: 'path', d: 'M86,42 H42 V30 L14,50 L42,70 V58 H86 Z' },   // the mirror of `arrow` (was a flag-shaped outline)
   ring: { kind: 'path', d: 'M50,6 a44,44 0 1 1 -0.1,0 Z M50,26 a24,24 0 1 0 0.1,0 Z', fillRule: 'evenodd' },
   // Baked-text variants — same base shape, rendered under a centered promo label (kind: 'group').
   badgeText: { kind: 'group', shape: 'circle' },
@@ -88,3 +89,18 @@ export const STICKER_GROUPS = [
 ];
 
 export function stickerSpec(key) { return SHAPES[key]; }
+
+/* What a person calls each sticker — the picker's tooltip and accessible name (it showed raw keys
+   like "burst12" and "arrowLeft"). Unknown keys fall back to a spaced-out key. */
+const STICKER_NAMES = {
+  burst8: 'Burst, 8 points', burst12: 'Burst, 12 points', burst16: 'Burst, 16 points', star5: 'Star', star6: 'Six-point star',
+  burstText: 'Sale burst with text', circle: 'Circle', pill: 'Pill', rrect: 'Rounded square', shield: 'Shield', diamond: 'Diamond',
+  square: 'Square', badgeText: 'Badge with text', banner: 'Banner', pennant: 'Pennant', ribbon: 'Bookmark ribbon', corner: 'Corner frame',
+  tagBannerText: 'Banner with text', tag: 'Price tag', swing: 'Swing tag', priceTagText: 'Price tag with text', arrow: 'Arrow',
+  arrowBlock: 'Block arrow', chevron: 'Chevrons', arrowDouble: 'Double arrow', arrowCurve: 'Curved arrow', arrowUp: 'Up arrow',
+  arrowDown: 'Down arrow', arrowLeft: 'Left arrow', sparkle: 'Sparkle', heart: 'Heart', bubble: 'Speech bubble', plus: 'Plus',
+  blob: 'Blob', ring: 'Ring',
+};
+export function stickerLabel(key) {
+  return STICKER_NAMES[key] || String(key).replace(/([a-z])([A-Z0-9])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+}

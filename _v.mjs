@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ channel: 'chrome' }); const p = await b.newPage({ viewport: { width: 1440, height: 800 } });
+const errs=[]; p.on('pageerror', e => errs.push(e.message));
+await p.goto('http://localhost:8901/apps/demo/', { waitUntil: 'networkidle' }); await p.waitForTimeout(1000);
+const step = async (label, fn, arg) => { const t = Date.now(); const r = await Promise.race([p.evaluate(fn, arg).catch(e => 'ERR ' + e.message.slice(0, 300)), new Promise(r => setTimeout(() => r('TIMEOUT'), 8000))]); console.log(label, Date.now() - t, 'ms', JSON.stringify(r)); return r; };
+await step('add', () => { const ed = window.ed; const o = new ed.fabric.Rect({ left: 60, top: 60, width: 200, height: 120, fill: '#ff0000', strokeWidth: 0 }); o.set({ id: 'v1', role: 'shape', name: 'V1' }); ed.fc.add(o); ed.commit('add'); ed.fc.setActiveObject(o); return !!o._vmaskAttached; });
+await step('mask', () => { const ed = window.ed; ed.addMask('v1'); const o = ed._byId('v1'); return [o.maskCanvas.width, o.maskCanvas.height]; });
+await step('paint', () => { const ed = window.ed; const o = ed._byId('v1'); ed._maskPaint(o, { x: 160, y: 120 }, { x: 70, y: 120 }, { size: 30, hardness: 1, color: '#000000' }, false); ed._refreshMaskFilter(o); ed._flushFrameJob('mask'); ed.fc.renderAll(); return 'ok'; });
+await step('json', () => window.ed.toJSON().length);
+await step('undo', () => { window.ed.undo(); return 'ok'; });
+console.log(errs); await b.close(); process.exit(0);

@@ -3,6 +3,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { computeMatch, applyMatch, colorStats } from '../packages/core/src/colormatch.js';
+import { applySharpen } from '../packages/core/src/sharpen.js';
+import { ADJUST_CONTROLS } from '../packages/core/src/color.js';
 import { hexRgb, rgba, toHex, relLum, rgbToHsl, hslToRgb, hexToHsl, recolorPixels, fxToFilterSpecs, FX_DEFAULTS, normalizeGradientStops, splitGradientStopColor } from '../packages/core/src/color.js';
 import { History } from '../packages/core/src/history.js';
 import { applyGeometry, isGeometryNeutral, straightenScale, keystoneQuad, squareToQuad, mapHomography, geometrySourcePoint } from '../packages/core/src/geometry.js';
@@ -17,7 +20,8 @@ import { getCropHandle, dragCropRect } from '../packages/core/src/crop.js';
 import { readSession, writeSession, clearSession, discardToTrash, readDiscarded, parseProject } from '../packages/core/src/session.js';
 import { alignDelta, snapDelta } from '../packages/core/src/layout.js';
 import { parseLaunch } from '../packages/core/src/bridge.js';
-import { starPoints, describeLayer } from '../packages/core/src/shapes.js';
+import { starPoints, describeLayer, layerLabel, clipLabel } from '../packages/core/src/shapes.js';
+import { imageLayerName } from '../packages/core/src/io.js';
 import { cvWorkerSource } from '../packages/core/src/cv/worker.js';
 import { CvEngine } from '../packages/core/src/cv/client.js';
 import { buildPromoLayout } from '../packages/core/src/templates.js';
@@ -554,6 +558,9 @@ test('describeLayer: text, groups, images, backgrounds and ad roles read like th
   assert.deepEqual(describeLayer({ type: 'i-text', fontFamily: '"Inter", sans-serif', fontWeight: 900, fontSize: 36, scaleY: 2 }), { kind: 'text', subtitle: 'Text: Inter Black 72pt' });
   assert.equal(describeLayer({ type: 'group', _objects: [{ type: 'rect' }, { type: 'rect' }] }).subtitle, 'Group (2 elements)');
   assert.equal(describeLayer({ type: 'group', _objects: [{ type: 'textbox' }, { type: 'rect' }] }).subtitle, 'Text & Vector Group');
+  // a baked-text sticker is one element, not a folder of two layers
+  assert.deepEqual(describeLayer({ type: 'group', role: 'shape', name: 'Sticker', _objects: [{ type: 'polygon' }, { type: 'i-text' }] }), { kind: 'badge', subtitle: 'Sticker' });
+  assert.equal(layerLabel({ type: 'group', role: 'shape', name: 'Sticker', _objects: [{}, {}] }), 'Sticker');
   assert.deepEqual(describeLayer({ type: 'image', ...sz(1080, 1080) }), { kind: 'image', subtitle: '1080×1080 Image' });
   assert.equal(describeLayer({ type: 'image', maskCanvas: {}, ...sz(10, 20) }).subtitle, '10×20 Masked image');
   assert.equal(describeLayer({ type: 'rect', role: 'bg', locked: true }).subtitle, 'Locked Solid Fill');
@@ -804,4 +811,611 @@ test('project: a valid project round-trips its scene and extras', () => {
   const p = parseProject(file);
   assert.equal(p.scene, '{"w":10,"h":10}');
   assert.deepEqual(p.extras.assets, [1, 2]);
+});
+
+/* ── voice: transcript -> command grammar ── */
+import { parseVoiceCommand, normalizeLLMCommand, installVoice } from '../packages/core/src/voice.js';
+test('voice grammar', () => {
+  const p = parseVoiceCommand;
+  assert.deepEqual(p('Undo.'), { action: 'undo' });
+  assert.equal(p('use the brush tool').tool, 'brush');
+  assert.equal(p('magic wand').tool, 'magicwand');
+  assert.equal(p('rectangle').tool, 'rect');
+  assert.equal(p('delete').action, 'delete');
+  assert.equal(p('delete this layer').action, 'delete');
+  assert.equal(p('make it red').color, '#e53935');
+  assert.equal(p('fill with blue').name, 'blue');
+  assert.equal(p('opacity 50 percent').value, 50);
+  assert.equal(p('rotate 90 degrees').degrees, 90);
+  assert.equal(p('rotate 30 degrees left').degrees, -30);
+  assert.equal(p('brush size 40').value, 40);
+  assert.equal(p('bring to front').dir, 'top');
+  assert.equal(p('send backward').dir, 'down');
+  assert.equal(p('flip horizontally').axis, 'x');
+  assert.equal(p('add text saying hello world').text, 'hello world');
+  assert.equal(p('zoom in').action, 'zoomIn');
+  assert.equal(p('select all').action, 'selectAll');
+  assert.equal(p('make it banana'), null);
+  assert.equal(p('what is the weather'), null);
+  assert.equal(p(''), null);
+});
+
+test('voice: LLM replies are validated before they can run', () => {
+  const n = normalizeLLMCommand;
+  assert.deepEqual(n({ action: 'undo' }), { action: 'undo' });
+  assert.equal(n({ action: 'rm -rf' }), null);
+  assert.equal(n({ action: 'tool', tool: 'nope' }), null);
+  assert.equal(n({ action: 'tool', tool: 'brush' }).tool, 'brush');
+  assert.equal(n({ action: 'opacity', value: 900 }).value, 100);
+  assert.equal(n({ action: 'opacity', value: 'abc' }), null);
+  assert.equal(n({ action: 'fill', color: 'red' }).color, '#e53935');   // names are fine, they map to hex
+  assert.equal(n({ action: 'fill', color: 'javascript:alert(1)' }), null);
+  assert.equal(n({ action: 'fill', color: '#FF0000' }).color, '#ff0000');
+  assert.equal(n({ action: 'rotate', degrees: -1000 }).degrees, -360);
+  assert.equal(n(null), null);
+});
+
+test('voice: unknown phrase falls back to the AI provider; known phrase never calls it', async () => {
+  let transcript, calls = 0;
+  const rec = { start() { transcript = (t) => this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: t }], { isFinal: true })] }); } };
+  const ran = [];
+  const ed = {
+    tool: 'select', W: 100, H: 100, layers: () => [], undo: () => ran.push('undo'), setTool: (t) => ran.push('tool:' + t),
+    setToolOptions: (o) => ran.push('size:' + o.size),
+    ai: { provider: () => ({ hasKey: () => true }), can: (c) => c === 'interpretCommand',
+      run: async (_c, text) => { calls++; return { status: 'ok', result: [{ action: 'tool', tool: 'brush' }, { action: 'size', value: 30 }, { action: 'evil' }] }; } },
+  };
+  const events = [];
+  installVoice(ed, { offline: false, win: { SpeechRecognition: function () { return rec; } }, onStatus: (s) => events.push(s) }).start();
+  transcript('undo');
+  assert.equal(calls, 0);
+  transcript('please start painting with a fat brush');
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(calls, 1);
+  assert.deepEqual(ran, ['undo', 'tool:brush', 'size:30']);
+  assert.ok(events.some(e => e.state === 'thinking'));
+  assert.match(events.at(-1).message, /brush tool, Size 30/);
+});
+
+test('voice: "select the dog" selects a named object; tool names still pick tools', async () => {
+  const p = parseVoiceCommand;
+  assert.deepEqual(p('select the dog'), { action: 'selectObject', target: 'dog' });
+  assert.equal(p('cut out the red bag').target, 'red bag');
+  assert.equal(p('select brush').tool, 'brush');
+  assert.equal(p('select the lasso tool').tool, 'lasso');
+  assert.equal(p('select all').action, 'selectAll');
+  assert.equal(normalizeLLMCommand({ action: 'selectObject', target: '  the dog ' }).target, 'the dog');
+  assert.equal(normalizeLLMCommand({ action: 'selectObject', target: '' }), null);
+
+  let rec;
+  const asked = [];
+  const ed = { layers: () => [], selectObjectByName: async (t) => { asked.push(t); return { status: 'ok' }; } };
+  const events = [];
+  installVoice(ed, { offline: false, win: { SpeechRecognition: function () { rec = this; this.start = () => {}; } }, onStatus: (s) => events.push(s) }).start();
+  rec.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'Select the dog' }], { isFinal: true })] });
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(asked, ['dog']);
+  assert.equal(events.at(-1).message, 'Selected dog');
+});
+
+test('voice: "replace the dog with a dolphin" = select by name, then AI-fill', async () => {
+  const p = parseVoiceCommand;
+  assert.deepEqual(p('replace the dog with a dolphin'), { action: 'replaceObject', target: 'dog', prompt: 'dolphin' });
+  assert.deepEqual(p('change image with dolphin image'), { action: 'replaceObject', target: '', prompt: 'dolphin image' });
+  assert.deepEqual(p('fill the selection with flowers'), { action: 'replaceObject', target: '', prompt: 'flowers' });
+  assert.equal(p('turn it 90 degrees').action, 'rotate');
+  assert.equal(normalizeLLMCommand({ action: 'replaceObject', target: 'dog', prompt: '' }), null);
+  const calls = [];
+  const ed = { layers: () => [], selection: null,
+    selectObjectByName: async (t) => (calls.push('select:' + t), { status: 'ok' }),
+    aiInsertAt: async (pr) => (calls.push('fill:' + pr), { status: 'ok' }) };
+  const { runVoiceCommand, } = await import('../packages/core/src/voice.js');
+  ed.replaceObjectByName = (await import('../packages/core/src/editor.js')).Editor.prototype.replaceObjectByName;
+  assert.equal(await runVoiceCommand(ed, p('replace the dog with a dolphin')), 'Replaced dog');
+  assert.deepEqual(calls, ['select:dog', 'fill:dolphin']);
+  await assert.rejects(runVoiceCommand(ed, p('fill with flowers')), /Select something first/);
+});
+
+import { VOICE_COMMANDS, catalogPrompt, parseVoiceCommands, runVoiceCommand } from '../packages/core/src/index.js';
+test('voice catalog: every example phrase parses to its own command', () => {
+  const bad = [];
+  for (const c of VOICE_COMMANDS) {
+    if (c.say.length && !c.ex.length) bad.push(c.id + ' has phrases but no example');
+    for (const ex of c.ex) { const p = parseVoiceCommand(ex); if (!p || p.action !== c.id) bad.push(`"${ex}" -> ${p ? p.action : null}, wanted ${c.id}`); }
+  }
+  assert.deepEqual(bad, []);
+  assert.ok(VOICE_COMMANDS.length >= 90, 'catalog covers the editor: ' + VOICE_COMMANDS.length);
+  assert.ok(catalogPrompt().includes('adjustBy{'));
+});
+
+test('voice catalog: chained phrases only split when every part is a command', () => {
+  assert.deepEqual(parseVoiceCommands('undo and zoom in').map(c => c.action), ['undo', 'zoomIn']);
+  assert.deepEqual(parseVoiceCommands('make it red then add a shadow').map(c => c.action), ['fill', 'shadow']);
+  assert.equal(parseVoiceCommands('replace the dog with a cat and a bird').length, 1);
+  assert.equal(parseVoiceCommands('undo and banana'), null);
+});
+
+test('voice catalog: arguments land where the editor expects them', async () => {
+  const calls = [];
+  const rec = (name) => (...a) => { calls.push([name, ...a]); };
+  const obj = { type: 'i-text', angle: 10, left: 5, top: 6, strokeWidth: 0, getScaledWidth: () => 100, getScaledHeight: () => 50, id: 'L1' };
+  const ed = new Proxy({
+    W: 1000, H: 800, toolOpts: { size: 30 }, selection: null, crop: null,
+    layers: () => [{ id: 'L1', active: true, role: 'text', name: 't' }],
+    fc: { getActiveObject: () => obj, renderAll() {} },
+    getImageFilters: () => ({ brightness: 100, contrast: 100 }),
+  }, { get: (t, k) => (k in t ? t[k] : rec(k)) });
+  const run = (phrase, actions) => runVoiceCommand(ed, parseVoiceCommand(phrase), actions);
+  assert.equal(await run('increase brightness'), 'Brightness 115');
+  assert.deepEqual(calls.pop(), ['setImageFilters', { brightness: 115 }]);
+  await run('contrast 130'); assert.deepEqual(calls.pop(), ['setImageFilters', { contrast: 130 }]);
+  await run('black and white'); assert.deepEqual(calls.pop(), ['setImageFilters', { saturate: 0 }]);
+  await run('font size 64'); assert.deepEqual(calls.pop(), ['setTextProps', { fontSize: 64 }]);
+  await run('bold'); assert.deepEqual(calls.pop(), ['setTextProps', { fontWeight: 'bold' }]);
+  await run('text center'); assert.deepEqual(calls.pop(), ['setTextProps', { textAlign: 'center' }]);
+  await run('move it left 50'); assert.deepEqual(calls.pop(), ['setNumeric', { x: -45, y: 6 }]);
+  await run('scale 200 percent'); assert.deepEqual(calls.pop(), ['setNumeric', { w: 200, h: 100 }]);
+  await run('canvas 16 to 9'); assert.deepEqual(calls.pop(), ['resizeCanvas', 1000, 563]);
+  await run('lock'); assert.deepEqual(calls.pop(), ['setLayer', 'L1', { locked: true }]);
+  await run('align left'); assert.deepEqual(calls.pop(), ['alignActiveSelection', 'left']);
+  await run('add a heart'); assert.deepEqual(calls.pop(), ['addSticker', 'heart']);
+  await assert.rejects(run('zoom in'), /isn't available here/);
+  let exp; await run('export as jpg', { export: (f) => { exp = f; } }); assert.equal(exp, 'jpg');
+});
+
+/* Coverage audit: every public Editor method is either reachable by voice (named in the catalog) or
+   listed here with the reason it is not. A new editor feature fails this test until someone maps it
+   (one cmd() in voice-commands.js) or exempts it — that is what keeps "everything by voice" true. */
+import { readFileSync } from 'node:fs';
+test('voice coverage: every public Editor method is mapped or consciously exempt', () => {
+  const editor = readFileSync(new URL('../packages/core/src/editor.js', import.meta.url), 'utf8');
+  const voice = readFileSync(new URL('../packages/core/src/voice-commands.js', import.meta.url), 'utf8');
+  const methods = [...new Set([...editor.matchAll(/^  (?:async )?([a-z][A-Za-z0-9]*)\(/gm)].map(m => m[1]))];
+  const EXEMPT = {
+    // plumbing / lifecycle
+    constructor: 'ctor', destroy: 'lifecycle', refreshFonts: 'font-load plumbing', on: 'events', off: 'events', toJSON: 'serialisation', loadJSON: 'serialisation', loadDocument: 'tab-switch plumbing (DocumentSet)', nextSpot: 'placement helper', matchColor: 'needs a reference layer (panel action)', matchColorSources: 'getter', blendPreview: 'thumbnail source (panel)', fillMaskGradient: 'pointer-tool equivalent (mask gradient)', frameList: 'getter', combineInfo: 'getter', frameBounds: 'getter', renameFrame: 'panel text edit (no spoken equivalent)', exportAllFrames: 'file export (export command is single-image)', commitLive: 'slider-drag plumbing', setVoidColor: 'theme plumbing (theme command)', openImageResult: 'internal AI result sink',
+    // read-only getters
+    featherTarget: 'getter', getImageGeometry: 'getter', getImageHistogram: 'getter', getShapeGradient: 'getter', getStroke: 'getter', getTextProps: 'getter', textSelectionFill: 'getter', isFillVisible: 'getter', isEditablePath: 'getter', cornerRadiusOf: 'getter', canRefineCutout: 'getter', backgroundGapFraction: 'getter',
+    // pointer-position-driven (a click/drag on the canvas has no spoken equivalent; the named-object route is selectObject)
+    wandPick: 'click', selectObjectAt: 'click (selectObject by name instead)', addToSelection: 'tool internals', subtractFromSelection: 'tool internals', selectActiveOrCenter: 'tool internals', selectDetectedBox: 'review-panel click', detectObjectBoxes: 'tool internals', openContextMenu: 'right-click', pasteAt: 'click-to-place', nudgePathNodes: 'drag/arrow keys', buildMagneticEdgeMap: 'tool internals', objectPickInImage: 'review-panel click', selectObjectsInSelection: 'used by selectObjectByName', toggleLayerSelection: 'panel shift-click (selectLayer / select all layers)', selectLayerRange: 'panel shift-click range (selectLayer / select all layers)', isolationParent: 'query (panel state)', panelPosition: 'query (panel state)',
+    // aliases of mapped commands
+    removeLayer: 'delete', moveLayer: 'order', alignLayer: 'align', duplicateSelection: 'duplicate', toggleSelectionVisible: 'visible', toggleSelectionLock: 'lock', reorderLayerTo: 'drag-reorder (order command)', aiInsert: 'aiInsertAt (aiGenerate)', exportJPEG: 'export via shell', exportSVG: 'export via shell', aiEnhancePrompt: 'popover helper',
+    // review-panel internals (reviewCommit / reviewCancel / detectToLayers drive them)
+    detectObjects: 'detect flow', detectRegions: 'detect flow', detectedBoxesToLayers: 'detect flow', commitRegions: 'review flow', cutoutRegion: 'review flow', extractRegion: 'review flow',
+    // needs a file / template spec the voice user can't dictate
+    fillWithImage: 'needs an image file', applyPromoLayout: 'template spec API', animateLayersIn: 'internal animation', setGradientStopColor: 'gradientTool sets stops',
+  };
+  const missing = methods.filter(m => !(m in EXEMPT) && !new RegExp('\\b' + m + '\\b').test(voice));
+  assert.deepEqual(missing, [], 'Editor methods with no voice command and no exemption');
+  const stale = Object.keys(EXEMPT).filter(m => !methods.includes(m));
+  assert.deepEqual(stale, [], 'exemptions for methods that no longer exist');
+});
+
+/* Regression: "draw the circle" after an AI command used to miss the grammar ("the" wasn't
+   accepted), fall through to the LLM, and come back as an AI image instead of a plain shape. */
+import { parseVoiceCommands as _pvc } from '../packages/core/src/voice.js';
+test('voice: "draw the <shape>" is a plain shape, never an AI action', () => {
+  for (const [phrase, shape] of [['draw the circle', 'ellipse'], ['draw the ellipse', 'ellipse'], ['draw the star', 'star'], ['create the rectangle', 'rect'], ['draw the red circle', 'ellipse'], ['add the circle', 'ellipse']]) {
+    const c = _pvc(phrase);
+    assert.ok(c && c.length === 1, phrase);
+    assert.equal(c[0].action, 'addShape', phrase);
+    assert.equal(c[0].shape, shape, phrase);
+  }
+  assert.equal(_pvc('replace the dog with a dolphin')[0].action, 'replaceObject');   // AI path unchanged
+});
+
+
+/* ── offline-first voice: no AI, on-device recogniser when available, helpful misses ── */
+import { suggestCommand, parseVoiceCommands as _pvcs } from '../packages/core/src/voice.js';
+const fakeSR = (extra = {}) => { const o = { started: 0 }; o.SR = function () { o.rec = this; this.start = () => { o.started++; }; }; Object.assign(o.SR, extra); return o; };
+const say = (o, t) => o.rec.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: t }], { isFinal: true })] });
+const wait = (ms = 10) => new Promise(r => setTimeout(r, ms));
+
+test('voice offline: never calls the AI provider, even with a key, and says what to try instead', async () => {
+  let aiCalls = 0;
+  const ed = { tool: 'select', layers: () => [], W: 100, H: 100, ai: { provider: () => ({ hasKey: () => true }), can: () => true, run: async () => { aiCalls++; return { status: 'ok', result: [] }; } } };
+  const f = fakeSR(), events = [];
+  installVoice(ed, { win: { SpeechRecognition: f.SR }, onStatus: (s) => events.push(s) }).start();
+  say(f, 'draw a squre'); await wait();
+  assert.equal(aiCalls, 0);
+  assert.match(events.at(-1).message, /did you mean "draw a square"/);
+  say(f, 'blorp'); await wait();
+  assert.equal(aiCalls, 0);
+  assert.match(events.at(-1).message, /Didn't understand "blorp"/);
+});
+
+test('voice offline: AI-only commands refuse clearly; layer-name selection and local bg removal still work', async () => {
+  const ran = [], ed = { layers: () => [], fc: { discardActiveObject() {}, getObjects: () => [], getActiveObject: () => null }, removeBackground: async (o) => { ran.push('bg:' + o.method); return { status: 'ok', method: 'local' }; } };
+  const f = fakeSR(), events = [];
+  installVoice(ed, { win: { SpeechRecognition: f.SR }, onStatus: (s) => events.push(s) }).start();
+  for (const t of ['replace the dog with a dolphin', 'generate an image of a red car', 'ai edit make it look like sunset', 'change the background to a sunny beach']) {
+    say(f, t); await wait();
+    assert.match(events.at(-1).message, /needs AI — not available in offline mode/, t);
+  }
+  say(f, 'select the dog'); await wait();
+  assert.match(events.at(-1).message, /needs AI \(offline mode\)/);
+});
+
+test('voice offline: common mishearings are fixed only after the plain phrase misses', () => {
+  assert.equal(_pvcs('make it read')[0].color, '#e53935');
+  assert.equal(_pvcs('draw a sickle')[0].shape, 'ellipse');
+  assert.equal(_pvcs('write read me')[0].text, 'read me');   // a real phrase is never rewritten
+  assert.equal(suggestCommand('zoom inn').phrase, 'zoom in');
+  assert.equal(suggestCommand('blorp'), null);
+});
+
+test('voice offline: asks the browser for the on-device recogniser, downloads the pack once, and says when it cannot', async () => {
+  // pack must be downloaded first
+  let installed = 0, st = 'downloadable';
+  let f = fakeSR({ available: async () => st, install: async () => { installed++; st = 'available'; return true; } }), events = [];
+  installVoice({ layers: () => [] }, { win: { SpeechRecognition: f.SR }, onStatus: (s) => events.push(s) }).start();
+  await wait(20);
+  assert.equal(installed, 1);
+  assert.equal(f.rec.processLocally, true);
+  assert.equal(events.at(-1).state, 'listening');
+  assert.match(events.at(-1).message, /on-device/);
+  // no on-device support: still listens, but is honest about it
+  f = fakeSR({ available: async () => 'unavailable' }); events.length = 0;
+  installVoice({ layers: () => [] }, { win: { SpeechRecognition: f.SR }, onStatus: (s) => events.push(s) }).start();
+  await wait(20);
+  assert.notEqual(f.rec.processLocally, true);
+  assert.match(events.at(-1).message, /may use the network/);
+  // browser without the API at all behaves as before (starts synchronously)
+  f = fakeSR(); installVoice({ layers: () => [] }, { win: { SpeechRecognition: f.SR } }).start();
+  assert.equal(f.started, 1);
+  // stopped while the pack was still downloading: never starts
+  let release; f = fakeSR({ available: () => new Promise(r => { release = r; }) });
+  const v = installVoice({ layers: () => [] }, { win: { SpeechRecognition: f.SR } }); v.start(); v.stop(); release('available'); await wait(20);
+  assert.equal(f.started, 0);
+});
+
+/* ── voice: fillers, spoken numbers, repeats, relative sizes, help ── */
+test('voice: filler words and stacked lead-ins are ignored', () => {
+  for (const t of ['um make it red', 'uh undo', 'okay now make it red', 'and then undo', "let's draw a circle", 'hey can you undo please']) assert.ok(_pvcs(t), t);
+  assert.equal(_pvcs('um now make it red')[0].action, 'fill');
+});
+test('voice: spoken numbers are read whole ("forty five" is 45, not 40)', () => {
+  assert.equal(_pvcs('rotate forty five degrees')[0].degrees, 45);
+  assert.equal(_pvcs('make it two hundred wide')[0].w, 200);
+  assert.equal(_pvcs('scale one fifty percent')[0].percent, 150);
+  assert.equal(_pvcs('zoom to two hundred percent')[0].percent, 200);
+  assert.equal(_pvcs('opacity seventy five')[0].value, 75);
+  assert.equal(_pvcs('draw two circles')[0].count, 2);                      // small counts stay words
+  assert.deepEqual(_pvcs('select layers one and two')[0].targets, ['1', '2']);
+  assert.equal(_pvcs('add text saying twenty twenty four')[0].text, 'twenty twenty four');   // typed text untouched
+  assert.equal(_pvcs('write forty five')[0].text, 'forty five');
+});
+test('voice: "twice" / "3 times" repeat a command; relative sizing; help', () => {
+  assert.deepEqual(_pvcs('undo twice').map(c => c.action), ['undo', 'undo']);
+  assert.equal(_pvcs('add a circle 3 times').length, 3);
+  assert.equal(_pvcs('export at 2 times').length, 1);   // "export at 2 times" is a scale, not a repeat
+  assert.equal(_pvcs('export at 2 times')[0].scale, 2);
+  assert.equal(_pvcs('a bit smaller')[0].percent, 90);
+  assert.equal(_pvcs('much bigger')[0].percent, 160);
+  assert.equal(_pvcs('make it bigger')[0].percent, 125);
+  assert.equal(_pvcs('what can I say')[0].action, 'help');
+  assert.equal(_pvcs('stop listening')[0].action, 'stopListening');
+});
+test('voice: "again" repeats the last command; "stop listening" turns voice off; nothing-to-repeat is reported', async () => {
+  const ran = []; const ed = { layers: () => [], undo: () => ran.push('undo'), W: 1, H: 1 };
+  const f = fakeSR(), events = [];
+  const v = installVoice(ed, { win: { SpeechRecognition: f.SR }, onStatus: (s) => events.push(s) }); v.start();
+  say(f, 'again'); await wait();
+  assert.match(events.at(-1).message, /Nothing to repeat/);
+  say(f, 'undo'); await wait(); say(f, 'do it again'); await wait();
+  assert.deepEqual(ran, ['undo', 'undo']);
+  say(f, 'stop listening'); await wait();
+  assert.equal(v.listening, false);
+});
+
+test('voice: run-on statement becomes an ordered queue of commands, offline', async () => {
+  const { parseVoiceCommands } = await import('../packages/core/src/voice.js');
+  const q = parseVoiceCommands('draw the circle height should be 200px in the left top and fill green on it');
+  assert.deepEqual(q.map(c => c.action), ['addShape', 'resize', 'place', 'fill']);
+  assert.equal(q[1].h, 200);
+  assert.equal(q[2].position, 'top left');
+  assert.equal(q[3].name, 'green');
+  assert.equal(parseVoiceCommands('a cat and a dog'), null);   // a stray "and" in a free-form request never splits
+});
+
+test('voice: layer by number, ordinal or position all mean the same thing', async () => {
+  const { parseVoiceCommands: p } = await import('../packages/core/src/voice.js');
+  const idx = (s) => p(s)[0];
+  for (const s of ['select layer 1', 'select layer one', 'select first layer', 'select the first layer', 'select the 1st layer', 'go to layer number one'])
+    assert.deepEqual(idx(s), { action: 'selectLayer', index: 1 }, s);
+  assert.deepEqual(idx('select the third layer from the bottom'), { action: 'selectLayer', index: 3, fromBottom: true });
+  assert.deepEqual(idx('select the last layer'), { action: 'selectLayer', which: 'bottom' });
+  assert.deepEqual(p('hide layer 2').map(c => c.action), ['selectLayer', 'visible']);
+  assert.deepEqual(p('delete the first layer').map(c => c.action), ['selectLayer', 'delete']);
+  assert.deepEqual(p('select layer two and make it red').map(c => c.action), ['selectLayer', 'fill']);
+  assert.deepEqual(p('rename layer 2 to hero').map(c => c.action), ['selectLayer', 'rename']);
+  assert.deepEqual(p('select layer 1 then move it to the top left').map(c => c.action), ['selectLayer', 'place']);
+  assert.deepEqual(p('select layers 1 and 3')[0].action, 'selectLayers');
+});
+
+test('layer names: a long text label ends in an ellipsis instead of silently losing characters', () => {
+  // Regression: labels were cut at 24 chars, so "on all orders above ₹1000" showed as "...above ₹100".
+  assert.equal(layerLabel({ type: 'i-text', text: 'on all orders above ₹1000' }), 'on all orders above ₹1000');
+  const long = layerLabel({ type: 'i-text', text: 'x'.repeat(80) });
+  assert.equal(long.length, 60); assert.ok(long.endsWith('…'));
+  assert.equal(clipLabel('two\nlines'), 'two lines');
+});
+
+test('imageLayerName: a placed file is named after the file, generic names fall back to "Image"', () => {
+  assert.equal(imageLayerName('bag_ad.png'), 'bag ad');
+  assert.equal(imageLayerName('/Users/me/Shampoo-Bottle.final.JPEG'), 'Shampoo Bottle.final');
+  assert.equal(imageLayerName('image.png'), 'Image');
+  assert.equal(imageLayerName(''), 'Image');
+  assert.equal(imageLayerName(undefined), 'Image');
+});
+
+test('rankCommands: whole words and word starts beat a match inside a word; every word must match', async () => {
+  const { rankCommands } = await import('../packages/core/src/cmdk.js');
+  const items = [{ label: 'Rectangular marquee', group: 'Tool' }, { label: 'Rectangle', group: 'Tool' }, { label: 'Add CTA button', group: 'Insert' }, { label: 'Flip horizontal', group: 'Arrange' }, { label: 'Flip vertical', group: 'Arrange' }];
+  // Regression: "cta" ranked "Rectangular marquee" (re-cta-ngular) first, so Enter picked a tool.
+  assert.equal(rankCommands(items, 'cta')[0].label, 'Add CTA button');
+  assert.deepEqual(rankCommands(items, 'flip h').map(i => i.label), ['Flip horizontal']);
+  assert.equal(rankCommands(items, 'rect')[0].label, 'Rectangle');
+  assert.equal(rankCommands(items, 'zzz').length, 0);
+  assert.equal(rankCommands(items, '').length, items.length);
+});
+
+test('stickerLabel: readable names for the picker, with a fallback for unknown keys', async () => {
+  const { stickerLabel } = await import('../packages/core/src/stickers.js');
+  assert.equal(stickerLabel('arrowCurve'), 'Curved arrow');
+  assert.equal(stickerLabel('burst12'), 'Burst, 12 points');
+  assert.equal(stickerLabel('someNewShape'), 'Some New Shape');
+});
+
+/* ── multi-document tabs ─────────────────────────────────────────────────────────────
+   DocumentSet only needs a small Editor surface, so a fake one (a scene string + a History)
+   exercises the real park/load/persist logic in bare node. */
+function fakeEditor() {
+  const ed = {
+    scene: 'blank', history: new History(60),
+    toJSON() { return this.scene; },
+    async loadDocument(scene, hist) {
+      this.scene = scene;
+      this.history.past = hist && hist.past.length ? hist.past.slice() : [scene];
+      this.history.future = hist ? hist.future.slice() : [];
+    },
+    reset({ width, height }) { this.scene = `blank ${width}x${height}`; this.history.past = [this.scene]; this.history.future = []; },
+    edit(s) { this.scene = s; this.history.push(s); },
+  };
+  ed.history.push('blank');
+  return ed;
+}
+async function docsImport() { return (await import('../packages/core/src/docs.js')).DocumentSet; }
+
+test('docs: each tab keeps its own scene and undo history across switches', async () => {
+  const DocumentSet = await docsImport();
+  const ed = fakeEditor(), set = new DocumentSet(ed, { persist: false });
+  const a = set.active.id;
+  ed.edit('A1'); ed.edit('A2');
+  const b = await set.add({ width: 100, height: 50 });
+  assert.equal(ed.scene, 'blank 100x50');
+  assert.equal(set.count, 2);
+  ed.edit('B1');
+  await set.switchTo(a);
+  assert.equal(ed.scene, 'A2');
+  assert.deepEqual(ed.history.past, ['blank', 'A1', 'A2']);
+  await set.switchTo(b);
+  assert.equal(ed.scene, 'B1');
+  assert.equal(ed.history.canUndo(), true);
+  assert.equal(await set.switchTo(b), false);       // already active — no-op
+});
+
+test('docs: closing the live tab activates a neighbour; the last tab cannot be closed', async () => {
+  const DocumentSet = await docsImport();
+  const ed = fakeEditor(), set = new DocumentSet(ed, { persist: false });
+  const a = set.active.id;
+  ed.edit('A1');
+  const b = await set.add();
+  ed.edit('B1');
+  assert.equal(await set.close(b), true);
+  assert.equal(set.activeId, a);
+  assert.equal(ed.scene, 'A1');
+  assert.equal(await set.close(a), false);
+  assert.equal(set.count, 1);
+});
+
+test('docs: overlapping operations run one at a time and stay consistent', async () => {
+  const DocumentSet = await docsImport();
+  const ed = fakeEditor(), set = new DocumentSet(ed, { persist: false });
+  const a = set.active.id;
+  ed.edit('A1');
+  const p1 = set.add(), p2 = set.add();
+  const [b, c] = await Promise.all([p1, p2]);
+  assert.equal(set.count, 3);
+  await set.switchTo(a);
+  assert.equal(ed.scene, 'A1');
+  assert.ok(b && c && b !== c);
+});
+
+test('docs: names count up and never reuse a closed tab’s; rename trims and ignores blanks', async () => {
+  const DocumentSet = await docsImport();
+  const ed = fakeEditor(), set = new DocumentSet(ed, { persist: false });
+  const b = await set.add();
+  await set.close(b);
+  await set.add();
+  assert.deepEqual(set.list().map(d => d.name), ['Untitled 1', 'Untitled 3']);
+  assert.equal(set.rename(set.activeId, '  Hero  '), true);
+  assert.equal(set.active.name, 'Hero');
+  assert.equal(set.rename(set.activeId, '   '), false);
+});
+
+test('docs: the tab set persists, and a restore brings back parked scenes', async () => {
+  const DocumentSet = await docsImport();
+  const mem = new Map();
+  const storage = { async get(k) { return mem.has(k) ? mem.get(k) : null; }, async set(k, v) { mem.set(k, v); }, async del(k) { mem.delete(k); } };
+  const ed = fakeEditor(), set = new DocumentSet(ed, { storage });
+  ed.edit('A1');
+  const b = await set.add({ name: 'Second' });
+  ed.edit('B1');
+  await set.switchTo(set.docs[0].id);            // A live, B parked
+
+  const ed2 = fakeEditor(); ed2.scene = 'A1';    // what restoreSession would have put on the canvas
+  const set2 = new DocumentSet(ed2, { storage });
+  assert.equal(await set2.restore(), 'tabs');
+  assert.deepEqual(set2.list().map(d => [d.name, d.active]), [['Untitled 1', true], ['Second', false]]);
+  assert.equal(ed2.scene, 'A1');                 // live doc left alone
+  await set2.switchTo(b);
+  assert.equal(ed2.scene, 'B1');
+});
+
+test('docs: a reload mid-switch restores the live tab from the record, not the stale session', async () => {
+  const DocumentSet = await docsImport();
+  const mem = new Map();
+  const storage = { async get(k) { return mem.has(k) ? mem.get(k) : null; }, async set(k, v) { mem.set(k, v); }, async del(k) { mem.delete(k); } };
+  const ed = fakeEditor();
+  // flush hangs, i.e. the page dies after the full record was written but before the lean one.
+  const set = new DocumentSet(ed, { storage, flush: () => new Promise(() => { }) });
+  ed.edit('A1');
+  set.add({ name: 'Second' });
+  await new Promise(r => setTimeout(r, 30));
+  const ed2 = fakeEditor(); ed2.scene = 'stale session scene';
+  const set2 = new DocumentSet(ed2, { storage });
+  assert.equal(await set2.restore(), 'loaded');
+  assert.equal(set2.active.name, 'Second');
+  assert.equal(ed2.scene, 'blank 960x640');      // the record's scene for the live tab wins
+});
+
+test('docs: restore with nothing saved or a corrupt record leaves the single default tab', async () => {
+  const DocumentSet = await docsImport();
+  const mem = new Map([['canvasmith.docs', '{nope']]);
+  const storage = { async get(k) { return mem.has(k) ? mem.get(k) : null; }, async set(k, v) { mem.set(k, v); }, async del(k) { mem.delete(k); } };
+  const set = new DocumentSet(fakeEditor(), { storage });
+  assert.equal(await set.restore(), false);
+  assert.equal(set.count, 1);
+});
+
+test('docs: at most 3 pages — add() refuses past the limit and a restore trims an over-long record', async () => {
+  const DocumentSet = await docsImport();
+  const ed = fakeEditor(), set = new DocumentSet(ed, { persist: false });
+  assert.ok(await set.add()); assert.ok(await set.add());
+  assert.equal(await set.add(), null);
+  assert.equal(await set.duplicate(), null);
+  assert.equal(set.count, 3);
+  const id = set.docs[0].id;
+  await set.close(id);
+  assert.ok(await set.add());                      // room again after closing one
+  const mem = new Map([['canvasmith.docs', JSON.stringify({ v: 1, savedAt: 1, scene: JSON.stringify({ activeId: 'a', docs: ['a', 'b', 'c', 'd', 'e'].map(i => ({ id: i, name: i, scene: i === 'a' ? null : '{}' })) }) })]]);
+  const storage = { async get(k) { return mem.has(k) ? mem.get(k) : null; }, async set(k, v) { mem.set(k, v); }, async del(k) { mem.delete(k); } };
+  const set2 = new DocumentSet(fakeEditor(), { storage });
+  await set2.restore();
+  assert.equal(set2.count, 3);
+});
+
+
+/* ── sharpen.js: unsharp mask ───────────────────────────────────────────────────────────── */
+const edgeImage = () => { const w = 8, h = 3, d = new Uint8ClampedArray(w * h * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4, v = x < 4 ? 100 : 160; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; } return { d, w, h }; };
+
+test('sharpen: amount 0 is a byte-exact no-op', () => {
+  const { d, w, h } = edgeImage(), before = Array.from(d);
+  applySharpen(d, w, h, 0);
+  assert.deepEqual(Array.from(d), before);
+});
+
+test('sharpen: steepens an edge (dark side darker, light side lighter) and leaves flat areas alone', () => {
+  const { d, w, h } = edgeImage(); applySharpen(d, w, h, 60);
+  const at = (x) => d[(1 * w + x) * 4];
+  assert.ok(at(3) < 100, 'dark pixel beside the edge got darker: ' + at(3));
+  assert.ok(at(4) > 160, 'light pixel beside the edge got lighter: ' + at(4));
+  assert.equal(at(1), 100, 'flat dark area untouched'); assert.equal(at(6), 160, 'flat light area untouched');
+});
+
+test('sharpen: more amount, more effect; clamps at 0..255', () => {
+  const lo = edgeImage(), hi = edgeImage(); applySharpen(lo.d, lo.w, lo.h, 30); applySharpen(hi.d, hi.w, hi.h, 100);
+  assert.ok(hi.d[(1 * 8 + 4) * 4] >= lo.d[(1 * 8 + 4) * 4]);
+  const blk = new Uint8ClampedArray(8 * 3 * 4); for (let i = 0; i < blk.length; i += 4) { blk[i] = blk[i + 1] = blk[i + 2] = i / 4 % 8 < 4 ? 0 : 255; blk[i + 3] = 255; }
+  applySharpen(blk, 8, 3, 100); assert.ok(blk.every(v => v >= 0 && v <= 255));
+});
+
+test('sharpen: never touches alpha, and transparent neighbours do not dark-halo a cut-out edge', () => {
+  const w = 6, h = 3, d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (x >= 3) { d[i] = 200; d[i + 1] = 120; d[i + 2] = 60; d[i + 3] = 255; } }   // opaque right half over transparent black
+  const alpha = Array.from({ length: w * h }, (_, n) => d[n * 4 + 3]);
+  applySharpen(d, w, h, 100);
+  assert.deepEqual(Array.from({ length: w * h }, (_, n) => d[n * 4 + 3]), alpha, 'alpha identical');
+  const edge = (1 * w + 3) * 4;
+  assert.deepEqual([d[edge], d[edge + 1], d[edge + 2]], [200, 120, 60], 'a uniform subject keeps its colour right up to a transparent edge');
+});
+
+test('sharpen: ships as a slider, defaults to 0, and only enters the filter chain when used', () => {
+  const c = ADJUST_CONTROLS.find(x => x.key === 'sharpen');
+  assert.ok(c && c.group === 'Effects' && c.min === 0 && c.max === 100);
+  assert.equal(FX_DEFAULTS.sharpen, 0);
+  assert.ok(!fxToFilterSpecs(FX_DEFAULTS).some(s => s.type === 'Sharpen'), 'absent at 0');
+  const specs = fxToFilterSpecs({ sharpen: 40 }), types = specs.map(s => s.type);
+  assert.deepEqual(specs.find(s => s.type === 'Sharpen').params, { amount: 40, radius: 1 });
+  assert.deepEqual(fxToFilterSpecs({ sharpen: 40, sharpenRadius: 3.5 }).find(s => s.type === 'Sharpen').params, { amount: 40, radius: 3.5 });
+  assert.ok(types.indexOf('Sharpen') > types.indexOf('Saturation') && types.indexOf('Sharpen') < types.indexOf('Blur'), 'after colour work, before blur');
+});
+
+test('sharpen: radius widens the band the effect reaches either side of an edge', () => {
+  const band = (radius) => { const w = 40, h = 3, d = new Uint8ClampedArray(w * h * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4, v = x < 20 ? 100 : 160; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+    applySharpen(d, w, h, 80, radius); let reach = 0; for (let x = 0; x < 20; x++) if (d[(1 * w + x) * 4] !== 100) reach++; return reach; };   // dark-side pixels that moved
+  const small = band(0.5), mid = band(1), large = band(4);
+  assert.ok(small >= 1 && small <= mid && mid < large, `reach grows with radius: ${small} <= ${mid} < ${large}`);
+});
+
+test('sharpen: radius is clamped to its range and falls back to the default when missing', () => {
+  const mk = () => { const w = 12, h = 5, d = new Uint8ClampedArray(w * h * 4); for (let p = 0; p < w * h; p++) { d[p * 4] = d[p * 4 + 1] = d[p * 4 + 2] = (p % w) < 6 ? 90 : 170; d[p * 4 + 3] = 255; } return { d, w, h }; };
+  const a = mk(), b = mk(), c = mk(), e = mk(), f = mk();
+  applySharpen(a.d, a.w, a.h, 70); applySharpen(b.d, b.w, b.h, 70, 1);
+  assert.deepEqual(Array.from(a.d), Array.from(b.d), 'no radius === default 1');
+  applySharpen(c.d, c.w, c.h, 70, 0.01); applySharpen(e.d, e.w, e.h, 70, 0.5);
+  assert.deepEqual(Array.from(c.d), Array.from(e.d), 'below the minimum clamps up');
+  applySharpen(f.d, f.w, f.h, 70, 999); assert.ok(f.d.every(v => v >= 0 && v <= 255), 'huge radius is clamped and stays valid');
+  assert.ok(ADJUST_CONTROLS.some(x => x.key === 'sharpenRadius' && x.min === 0.5 && x.max === 6), 'radius slider present');
+  assert.equal(FX_DEFAULTS.sharpenRadius, 1);
+});
+
+test('adjust controls: every slider has a unique accessible name (label), and `short` is only a display alias', () => {
+  const labels = ADJUST_CONTROLS.map(c => c.label);
+  assert.equal(new Set(labels).size, labels.length, 'duplicate labels: ' + labels.filter((l, i) => labels.indexOf(l) !== i));
+  ADJUST_CONTROLS.filter(c => c.short).forEach(c => assert.ok(c.short.length < c.label.length, c.key + ': short should be shorter than label'));
+  assert.ok(!labels.includes('Radius'), '"Radius" alone collides with the Corner radius slider');
+});
+
+test('sharpen: the fast (box) blur matches the exact Gaussian, and the opaque fast path matches the alpha path', () => {
+  const w = 96, h = 64; let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const base = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (y * w + x) * 4, v = ((x > 40 && x < 70 && y > 16 && y < 50) ? 170 : 90) + Math.floor(rnd() * 14) + ((x + y) % 9 < 4 ? 18 : 0); base[i] = v; base[i + 1] = v * 0.9; base[i + 2] = v * 0.8; base[i + 3] = 255; }
+  for (const r of [2, 3, 4, 6]) {
+    const fast = new Uint8ClampedArray(base), exact = new Uint8ClampedArray(base);
+    applySharpen(fast, w, h, 80, r); applySharpen(exact, w, h, 80, r, { exact: true });
+    let sum = 0, mx = 0, n = 0; for (let i = 0; i < fast.length; i++) { if (i % 4 === 3) continue; const d = Math.abs(fast[i] - exact[i]); sum += d; mx = Math.max(mx, d); n++; }
+    assert.ok(sum / n < 1.2, `radius ${r}: mean error ${(sum / n).toFixed(2)} grey levels`); assert.ok(mx <= 14, `radius ${r}: worst pixel off by ${mx}`);
+  }
+  const opaque = new Uint8ClampedArray(base), viaAlpha = new Uint8ClampedArray(base); viaAlpha[3] = 254;   // one pixel at 254 forces the general alpha-weighted path
+  applySharpen(opaque, w, h, 80, 3); applySharpen(viaAlpha, w, h, 80, 3);
+  for (let i = 4; i < opaque.length; i++) if (i % 4 !== 3) assert.ok(Math.abs(opaque[i] - viaAlpha[i]) <= 1, 'the two paths agree at byte ' + i);
+});
+
+
+/* ── colormatch.js ───────────────────────────────────────────────────────────────────────── */
+const noisy = (n, mean, spread, seed = 3) => { const d = new Uint8ClampedArray(n * 4); let q = seed; const r = () => (q = (q * 16807) % 2147483647) / 2147483647; for (let i = 0; i < n; i++) { for (let c = 0; c < 3; c++) d[i * 4 + c] = mean[c] + (r() - .5) * 2 * spread[c]; d[i * 4 + 3] = 255; } return d; };
+
+test('colormatch: matching moves the source mean and spread onto the reference', () => {
+  const src = noisy(4000, [60, 90, 120], [20, 20, 20]), ref = noisy(4000, [180, 150, 100], [40, 30, 20], 9);
+  const m = computeMatch(src, ref), out = new Uint8ClampedArray(src); applyMatch(out, m, 1);
+  const a = colorStats(out), b = colorStats(ref);
+  for (let c = 0; c < 3; c++) { assert.ok(Math.abs(a.mean[c] - b.mean[c]) < 3, 'mean ' + c + ': ' + a.mean[c] + ' vs ' + b.mean[c]); assert.ok(Math.abs(a.std[c] - b.std[c]) < 4, 'std ' + c); }
+});
+
+test('colormatch: amount 0 is a no-op, 0.5 lands halfway, gain is clamped for a flat source', () => {
+  const src = noisy(500, [60, 60, 60], [10, 10, 10]), ref = noisy(500, [200, 200, 200], [10, 10, 10], 5), m = computeMatch(src, ref);
+  const none = new Uint8ClampedArray(src); applyMatch(none, m, 0); assert.deepEqual(Array.from(none), Array.from(src));
+  const half = new Uint8ClampedArray(src); applyMatch(half, m, 0.5); const full = new Uint8ClampedArray(src); applyMatch(full, m, 1);
+  const mean = (d) => colorStats(d).mean[0]; assert.ok(mean(half) > mean(src) + 30 && mean(half) < mean(full) - 30, `${mean(src)} < ${mean(half)} < ${mean(full)}`);
+  const flat = new Uint8ClampedArray(40); for (let i = 0; i < 40; i += 4) { flat[i] = flat[i + 1] = flat[i + 2] = 100; flat[i + 3] = 255; }
+  assert.ok(computeMatch(flat, ref).g.every(v => v <= 2 && v >= 0.5), 'a flat source is not stretched into noise');
+});
+
+test('colormatch: transparent pixels are ignored (a cut-out is judged on its subject) and never altered', () => {
+  const d = new Uint8ClampedArray(16); d.set([200, 100, 50, 255, 0, 0, 0, 0, 200, 100, 50, 255, 0, 0, 0, 0]);
+  assert.deepEqual(colorStats(d).mean.map(Math.round), [200, 100, 50], 'transparent black does not drag the mean down');
+  const ref = noisy(100, [100, 100, 100], [30, 30, 30]), m = computeMatch(d, ref), out = new Uint8ClampedArray(d); applyMatch(out, m, 1);
+  assert.deepEqual(Array.from(out.slice(4, 8)), [0, 0, 0, 0]); assert.equal(computeMatch(new Uint8ClampedArray(8), ref), null);
 });

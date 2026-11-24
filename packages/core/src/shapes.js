@@ -111,6 +111,20 @@ export function resizeShapeTo(obj, tool, from, to, o = {}) {
   obj.setCoords();
 }
 
+/* Drag-created text: a fixed-width Textbox that wraps inside the dragged width (click-created text
+   is an auto-width IText instead). Same look/defaults as makeText. */
+export function makeTextBox(fabric, pt, width, o = {}) {
+  const t = new fabric.Textbox(o.text || 'Double-click to edit', {
+    ...BASE, left: pt.x, top: pt.y, width: Math.max(40, width),
+    fontFamily: o.fontFamily || 'system-ui, sans-serif',
+    fontSize: o.fontSize || 48,
+    fontWeight: o.fontWeight || 700,
+    fill: o.fill || '#111111',
+  });
+  t.set({ id: uid(), role: 'text', name: 'Text' });
+  return t;
+}
+
 export function makeText(fabric, pt, o = {}) {
   const t = new fabric.IText(o.text || 'Double-click to edit', {
     ...BASE, left: pt.x, top: pt.y,
@@ -131,6 +145,13 @@ export function isContainerGroup(o) {
 }
 
 /* Human name for a layer, mirroring what a layers panel wants to show. */
+/* A label cut to `n` characters gets an ellipsis — a silent cut read "above ₹1000" as "above ₹100".
+   Newlines/runs of spaces collapse first, so a multi-line text layer reads as one line. */
+export function clipLabel(str, n = 60) {
+  const t = String(str || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t;
+}
+
 export function layerLabel(o) {
   if (o.renamed && o.name) return o.name;
   if (o.role === 'paint') return o.name || 'Paint';
@@ -140,9 +161,11 @@ export function layerLabel(o) {
   // generic `type === 'group'` branch below — otherwise every ad-copy layer would show its child
   // count ("3 layers") instead of its own name.
   if (o.role === 'cta' || o.role === 'badge' || o.role === 'price' || o.role === 'brand') return o.name || 'Layer';
-  if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') return (o.text || 'Text').slice(0, 24);
+  if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') return clipLabel(o.text) || 'Text';
   if (o.type === 'image') return o.name || 'Image';
   if (o.role === 'group') return o.name || 'Group';
+  // a baked-text sticker is a group too, but it's one element ("Sticker"), not "2 layers"
+  if (o.type === 'group' && o.role === 'shape') return o.name || 'Sticker';
   if (o.type === 'group') return (o._objects ? o._objects.length : '?') + ' layers';
   return o.name || o.type || 'Layer';
 }
@@ -180,6 +203,7 @@ export function layerTypeLabel(o) {
   if (AD_ROLE_NAMES[o.role]) return AD_ROLE_NAMES[o.role];
   if (o.type === 'image') return 'Image';
   if (isTextObj(o)) return 'Text';
+  if (o.type === 'group' && o.role === 'shape') return 'Sticker';
   if (o.type === 'group') return 'Group';
   const shape = shapeKindOf(o);
   if (shape === 'line' || shape === 'freehand') return SHAPE_NAMES[shape];
@@ -200,6 +224,7 @@ export function describeLayer(o) {
     const font = String(o.fontFamily || 'Text').split(',')[0].replace(/["']/g, '').trim();
     return { kind: 'text', subtitle: `Text: ${font} ${WEIGHT_NAMES[o.fontWeight] || o.fontWeight || 'Regular'} ${Math.round((o.fontSize || 0) * (o.scaleY || 1))}pt` };
   }
+  if (o.type === 'group' && o.role === 'shape') return { kind: 'badge', subtitle: locked + 'Sticker' };
   if (o.type === 'group') {
     const kids = o._objects || [], texts = kids.filter(isTextObj).length;
     if (texts && texts < kids.length) return { kind: 'group', subtitle: 'Text & Vector Group' };
@@ -212,4 +237,48 @@ export function describeLayer(o) {
   if (o.shapeKind === 'pen') return { kind: 'shape', shape, subtitle: locked + (o.maskCanvas ? 'Masked ' : '') + 'Vector path' };
   if (o.isFreehand || (o.type === 'path' && !o.fill)) return { kind: 'shape', shape, subtitle: locked + 'Freehand path' };
   return { kind: 'shape', shape, subtitle: locked + (o.maskCanvas ? 'Masked ' : '') + 'Vector Shape' };
+}
+
+/* Text caret keys while a word is highlighted (a double-click leaves one highlighted): Fabric's
+   End / Home / Cmd+→ / Cmd+← only collapse the highlight onto its own edge, so "double-click the
+   text, press End, type" inserted in the MIDDLE of the line. Collapse first, then let Fabric run
+   its usual jump to the line boundary — what every native text field does. Idempotent. */
+export function installTextCaretKeys(fabric) {
+  const P = fabric && fabric.IText && fabric.IText.prototype;
+  if (!P || P.__cmCaretKeys) return;
+  P.__cmCaretKeys = true;
+  const toLineEdge = (e) => !!e && (e.metaKey || e.keyCode === 35 || e.keyCode === 36);
+  const right = P.moveCursorRightWithoutShift, left = P.moveCursorLeftWithoutShift;
+  P.moveCursorRightWithoutShift = function (e) {
+    if (this.selectionStart !== this.selectionEnd && toLineEdge(e)) this.selectionStart = this.selectionEnd;
+    return right.call(this, e);
+  };
+  P.moveCursorLeftWithoutShift = function (e) {
+    if (this.selectionStart !== this.selectionEnd && toLineEdge(e)) this.selectionEnd = this.selectionStart;
+    return left.call(this, e);
+  };
+}
+
+/* Fabric rebuilds a layer's transform from a matrix whenever it leaves a group or a multi-selection
+   (applyTransformToObject -> qrDecompose), and a matrix can't tell "mirrored" from "turned 180° and
+   flipped vertically". So moving a flipped photo together with another layer brought it back as
+   Rotation 180° + Flip V with X/Y on the opposite corner. Flip X + flip Y is exactly a 180° turn,
+   so when both flips came back inverted, swap them back and give the 180° to the angle — the
+   pixels are identical and the layer keeps the flips the user set. Idempotent. */
+export function installFlipPreservingRestore(fabric) {
+  const U = fabric && fabric.util;
+  if (!U || !U.applyTransformToObject || U.__cmFlipKeep) return;
+  U.__cmFlipKeep = true;
+  const apply = U.applyTransformToObject;
+  U.applyTransformToObject = function (object, transform) {
+    const fx = !!object.flipX, fy = !!object.flipY;
+    const r = apply.call(this, object, transform);
+    if (!!object.flipX !== fx && !!object.flipY !== fy) {
+      const c = object.getCenterPoint();
+      object.flipX = fx; object.flipY = fy;
+      object.angle = (((object.angle || 0) + 180) % 360 + 360) % 360;
+      object.setPositionByOrigin(c, 'center', 'center');
+    }
+    return r;
+  };
 }

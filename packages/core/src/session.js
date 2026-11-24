@@ -317,8 +317,11 @@ export async function restoreDiscarded(ed, { storage, key = SESSION_KEY, trashKe
    confusing half-load. */
 const PROJECT_KIND = 'canvasmith/project';
 
-export function exportProject(ed, extras = {}) {
-  return JSON.stringify({ kind: PROJECT_KIND, v: VERSION, savedAt: Date.now(), scene: ed.toJSON(), extras });
+export function exportProject(ed, extras = {}, docs = null) {
+  // `scene` stays the active page (what every older version reads); `pages` adds the whole tab set when there is one
+  const rec = { kind: PROJECT_KIND, v: VERSION, savedAt: Date.now(), scene: ed.toJSON(), extras };
+  if (docs && typeof docs.exportState === 'function') rec.pages = docs.exportState();
+  return JSON.stringify(rec);
 }
 
 /* Parses and validates a .canvasmith file's text. Throws with a message meant to be SHOWN to the
@@ -333,20 +336,24 @@ export function parseProject(text) {
   }
   if (data.kind && data.kind !== PROJECT_KIND) throw new Error('That file isn\u2019t a Canvasmith project.');
   if (data.v > VERSION) throw new Error('That project was saved by a newer version of Canvasmith.');
-  return { scene: data.scene, extras: data.extras || {} };
+  return { scene: data.scene, extras: data.extras || {}, pages: data.pages && Array.isArray(data.pages.docs) ? data.pages : null };
 }
 
 /* Loads a parsed project into `ed`. Rebases history for the same reason restoreSession does:
    an opened document is not an edit made in this session, so undo must not walk back into
    whatever was on the canvas before it. */
-export function loadProject(ed, text) {
+export function loadProject(ed, text, docs = null) {
   /* Parse INSIDE the promise: a synchronous throw from an async-looking function is a trap for
      callers (a .catch() on the returned promise never runs, and the error escapes to wherever
      the call happened to sit instead). Rejecting keeps one error path for every failure. */
   let parsed;
   try { parsed = parseProject(text); }
   catch (e) { return Promise.reject(e); }
-  const { scene, extras } = parsed;
+  const { scene, extras, pages } = parsed;
+  // a multi-page project: hand the whole set to the tab manager (it loads the active page and rebases undo itself)
+  if (pages && docs && typeof docs.importState === 'function') {
+    return docs.importState(pages).then(ok => { if (ok) return extras; return loadProject(ed, text, null); });
+  }
   return new Promise((resolve) => {
     let settled = false;
     const done = () => { if (settled) return; settled = true; ed.history.rebase(ed.toJSON()); resolve(extras); };

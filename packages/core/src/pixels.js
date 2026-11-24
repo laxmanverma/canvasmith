@@ -24,24 +24,58 @@ export function selectionClipObject(fabric, sel) {
    whole artboard, not the shape's own small bounding box — so it renders at the full W×H instead;
    selectionBounds() itself is invert-agnostic (matches selectionToPath2D's own contract), so the
    full-canvas box is resolved here rather than pushed onto every caller of selectionBounds. */
-export function renderSelectedPixels(fabric, layer, sel, W, H, Path2DImpl) {
-  const box = (sel && sel.invert) ? { x: 0, y: 0, w: W, h: H } : selectionBounds(sel, W, H);
+/* `density` renders the copy at that many pixels per scene px (the box stays in scene px): a photo
+   shown at half size has twice the detail on file, and a lifted piece of it should keep that. */
+export function renderSelectedPixels(fabric, layer, sel, W, H, Path2DImpl, { density = 1 } = {}) {
+  const feather = sel && sel.feather > 0 ? sel.feather : 0;
+  let box = (sel && sel.invert) ? { x: 0, y: 0, w: W, h: H } : selectionBounds(sel, W, H);
   if (box.w < 1 || box.h < 1) return null;
-  const cw = Math.max(1, Math.round(box.w)), ch = Math.max(1, Math.round(box.h));
+  // a feathered edge fades OUTWARD too, so the tight box grows by the blur's reach (never past the artboard)
+  if (feather && !sel.invert) {
+    const pad = Math.ceil(feather * 1.5), x0 = Math.max(0, box.x - pad), y0 = Math.max(0, box.y - pad);
+    box = { x: x0, y: y0, w: Math.min(W, box.x + box.w + pad) - x0, h: Math.min(H, box.y + box.h + pad) - y0 };
+  }
+  // a copy can only contain artboard pixels: clip the box to the artboard (a selection dragged off the edge, or wholly outside, gives less / nothing)
+  if (!sel || !sel.invert) {
+    const x0 = Math.max(0, box.x), y0 = Math.max(0, box.y), x1 = Math.min(W, box.x + box.w), y1 = Math.min(H, box.y + box.h);
+    box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    if (box.w < 1 || box.h < 1) return null;
+  }
+  const k = density > 0 ? density : 1;
+  const cw = Math.max(1, Math.round(box.w * k)), ch = Math.max(1, Math.round(box.h * k));
   const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
+  const P = Path2DImpl || (typeof Path2D !== 'undefined' ? Path2D : null);
   ctx.save();
+  ctx.scale(k, k);
   ctx.translate(-box.x, -box.y);
-  if (sel) {
-    const P = Path2DImpl || (typeof Path2D !== 'undefined' ? Path2D : null);
-    if (P) {
-      const path = pathFromSelection(sel, P, sel.invert ? box : null);
-      if (path) ctx.clip(path, sel.invert ? 'evenodd' : 'nonzero');
-    }
+  if (sel && !feather && P) {
+    const path = pathFromSelection(sel, P, sel.invert ? box : null);
+    if (path) ctx.clip(path, sel.invert ? 'evenodd' : 'nonzero');
   }
+  // Fabric draws a cached object from a cache canvas sized for the current ZOOM — at density > 1
+  // that would hand back screen-resolution pixels. Draw it straight from its source instead.
+  const cached = layer.objectCaching;
+  if (k > 1) layer.objectCaching = false;
   try { layer.render(ctx); } catch (e) { /* layer not renderable (locked group edge cases) */ }
+  finally { if (k > 1) layer.objectCaching = cached; }
   ctx.restore();
-  return { canvas: cv, box };
+  if (feather && P) {
+    // Photoshop-style feather: multiply the pixels by the selection shape blurred by radius/2 (sigma),
+    // so the edge fades over roughly `feather` px on each side of the outline.
+    const m = document.createElement('canvas'); m.width = cw; m.height = ch;
+    const mc = m.getContext('2d');
+    mc.scale(k, k);
+    mc.translate(-box.x, -box.y);
+    const path = pathFromSelection(sel, P, sel.invert ? box : null);
+    mc.filter = `blur(${feather * k / 2}px)`;   // ctx.filter blurs in device px, so scale it with the copy
+    mc.fillStyle = '#000';
+    if (path) mc.fill(path, sel.invert ? 'evenodd' : 'nonzero');
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(m, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  return { canvas: cv, box, density: k };
 }
 
 /* `outerBox`, when set, adds an outer rect spanning the render canvas's own bounds so an inverted

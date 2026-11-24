@@ -23,6 +23,9 @@ function layerName(ed, o) {
   return (l && l.name) || o.name || o.type;
 }
 
+const FEATHER_PRESETS = [5, 10, 20, 40, 80];
+const featherItems = (idp, run, off) => [...FEATHER_PRESETS.map(px => ({ id: idp + px, label: px + ' px', run: () => run(px) })), { id: idp + 'off', label: 'Remove feather', run: () => off() }];
+
 export function buildContextMenu(ed, { pt, hit } = {}) {
   const sections = [];
   const hasClip = !!ed._clipboard;
@@ -55,9 +58,12 @@ export function buildContextMenu(ed, { pt, hit } = {}) {
       // Shrink the rough marquee/lasso to the object(s) inside it, like the Object select tool.
       { id: 'sel-object', label: 'Select object', disabled: !!ed._polyBuild, run: () => ed.selectObjectsInSelection(pt) },   // not on a half-drawn polygon lasso
     ], [
+      { id: 'sel-copy', label: 'Copy', shortcut: MOD + 'C', run: () => ed.copySelectedPixels() },
       { id: 'sel-copy-layer', label: 'Copy to new layer', shortcut: MOD + 'J', run: () => ed.duplicateSelectionToLayer() },
       { id: 'sel-lift', label: 'Cut to new layer', run: () => ed.liftSelectionToLayer() },
       { id: 'sel-delete', label: 'Delete selected pixels', shortcut: DEL, run: () => ed.cutSelectionFromLayer() },
+    ], [
+      { id: 'sel-feather', label: 'Feather selection', items: featherItems('sel-feather:', px => ed.featherSelection(px), () => ed.featherSelection(0)) },
     ], [
       { id: 'sel-invert', label: 'Invert selection', shortcut: SHIFT_MOD + 'I', run: () => ed.invertSelection() },
       { id: 'sel-clear', label: 'Deselect', shortcut: 'Esc', run: () => ed.clearSelection() },
@@ -132,6 +138,10 @@ export function buildContextMenu(ed, { pt, hit } = {}) {
   if (isImage) {
     extra.push({ id: 'crop', label: 'Crop image', shortcut: 'C', run: () => { ed.activate(single.id); ed.setTool('crop'); } });
     extra.push({ id: 'remove-bg', label: 'Remove background', run: () => ed.removeBackground({ id: single.id }) });
+  }
+  if (single && (single.type === 'image') && ed._maskable && !ed._isVectorMasked(single)) {
+    extra.push({ id: 'feather-mask', label: 'Feather edges (as mask)', items: featherItems('feather-mask:', px => ed.setEdgeFeather(single.id, px), () => ed.setEdgeFeather(single.id, 0)) });
+    if (single.role !== 'paint') extra.push({ id: 'feather-bake', label: 'Feather edges (on the layer)', items: FEATHER_PRESETS.map(px => ({ id: 'feather-bake:' + px, label: px + ' px', run: () => ed.setEdgeFeather(single.id, px, { bake: true }) })) });
   }
   if (single && ed._maskable && ed._maskable(single)) {
     if (single.maskCanvas) {

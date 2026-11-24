@@ -9,6 +9,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -73,6 +74,108 @@ test('browser: click-drag creates a shape sized to the drag, Shift constrains to
 });
 
 /* ── history: undo/redo across a real Fabric scene ────────────────────────────────────── */
+test('browser: a fractional scale survives save/load and undo/redo without drifting', async () => {
+  // Regression: Fabric serialises numbers to 2 decimals by default, so scale 1.0556 came back from
+  // a reload or an undo as 1.06 — a 760px layer became 763px.
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, f = window.fabric;
+    const o = new f.Rect({ left: 160.25, top: 215.5, width: 720, height: 900, scaleX: 760 / 720, scaleY: 950 / 900, strokeWidth: 0, fill: '#0a0' });
+    ed.fc.add(o); ed.commit('add');
+    o.set({ left: 10 }); ed.commit('move');
+    ed.undo();
+    await new Promise(r => setTimeout(r, 50));
+    const u = ed.fc.getObjects()[0];
+    const afterUndo = { w: u.getScaledWidth(), h: u.getScaledHeight(), left: u.left };
+    const json = ed.toJSON ? ed.toJSON() : null;
+    return { afterUndo, json: json && JSON.parse(json).scene.objects[0] };
+  });
+  assert.ok(Math.abs(r.afterUndo.w - 760) < 0.01, 'width after undo: ' + r.afterUndo.w);
+  assert.ok(Math.abs(r.afterUndo.h - 950) < 0.01, 'height after undo: ' + r.afterUndo.h);
+  assert.equal(r.afterUndo.left, 160.25);
+  if (r.json) assert.ok(Math.abs(r.json.scaleX * r.json.width - 760) < 0.01, 'saved scene width: ' + r.json.scaleX * r.json.width);
+});
+
+test('browser: resizeCanvas keeps content centred by default; anchor top-left keeps absolute positions', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, f = window.fabric;
+    const o = new f.Rect({ left: 100, top: 50, width: 200, height: 200, strokeWidth: 0 }); ed.fc.add(o);
+    ed.resizeCanvas(600, 500);                                    // from 400×300: +200 wide, +200 tall
+    const centred = { left: o.left, top: o.top };
+    ed.resizeCanvas(400, 300, { anchor: 'top-left' });
+    return { centred, kept: { left: o.left, top: o.top } };
+  });
+  assert.deepEqual(r.centred, { left: 200, top: 150 });
+  assert.deepEqual(r.kept, { left: 200, top: 150 });
+});
+
+test('browser: Open image into an empty page whose size the user chose keeps that size and fits the image', async () => {
+  // Regression: picking 4:5 for an Instagram post and then opening a 9:16 photo silently threw the
+  // 4:5 away and made the page 9:16.
+  const src = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 90; c.height = 160; const x = c.getContext('2d'); x.fillStyle = '#c33'; x.fillRect(0, 0, 90, 160); return c.toDataURL(); });
+  const r = await page.evaluate(async (src) => {
+    const ed = window.__ed;
+    ed.resizeCanvas(1080, 1350);
+    const img = await ed.openImage(src);
+    const kept = { W: ed.W, H: ed.H, w: Math.round(img.getScaledWidth()), h: Math.round(img.getScaledHeight()), left: Math.round(img.left), top: Math.round(img.top) };
+    await ed.openImage(src);                                       // over existing work: a new document the image's shape
+    return { kept, over: { W: ed.W, H: ed.H } };
+  }, src);
+  assert.deepEqual(r.kept, { W: 1080, H: 1350, w: 759, h: 1350, left: 160, top: 0 });
+  assert.equal(r.over.W / r.over.H, 90 / 160);
+});
+
+test('browser: setNumeric keepRatio — a width edit scales the height by the same factor', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, o = new window.fabric.Rect({ left: 0, top: 0, width: 720, height: 1280, strokeWidth: 0 });
+    ed.fc.add(o); ed.fc.setActiveObject(o);
+    ed.setNumeric({ w: 1080 }, { keepRatio: true });
+    const kept = [o.getScaledWidth(), o.getScaledHeight()];
+    ed.setNumeric({ w: 540 });
+    return { kept, free: [o.getScaledWidth(), o.getScaledHeight()] };
+  });
+  assert.deepEqual(r.kept.map(Math.round), [1080, 1920]);
+  assert.deepEqual(r.free.map(Math.round), [540, 1920], 'without keepRatio only W changes');
+});
+
+test('browser: an image takes a corner radius (scene px, kept through scale, undo and crop; 0 removes it)', async () => {
+  const src = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 200; c.height = 100; c.getContext('2d').fillRect(0, 0, 200, 100); return c.toDataURL(); });
+  const r = await page.evaluate(async (src) => {
+    const ed = window.__ed, img = await ed.addImage(src);
+    img.set({ left: 0, top: 0, scaleX: 2, scaleY: 2 }); ed.fc.setActiveObject(img);
+    ed.setNumeric({ rx: 40 });
+    const cp = () => { const o = ed.fc.getObjects().find(q => q.type === "image"), c = o.clipPath; return !c ? null : { role: c.role, rx: c.rx, w: c.width, h: c.height, sceneR: ed.cornerRadiusOf(o) }; };
+    const set = cp();
+    ed.undo(); await new Promise(r => setTimeout(r, 50)); const undone = cp();
+    ed.redo(); await new Promise(r => setTimeout(r, 50)); const redone = cp();
+    const o = ed.fc.getObjects().find(q => q.type === 'image'); ed.fc.setActiveObject(o);
+    ed.setTool('crop'); ed.crop = { x: 0, y: 0, w: 200, h: 200 }; ed.applyCrop();
+    const cropped = cp();
+    ed.fc.setActiveObject(ed.fc.getObjects().find(q => q.type === 'image')); ed.setNumeric({ rx: 0 });
+    return { set, undone, redone, cropped, cleared: cp() };
+  }, src);
+  assert.deepEqual(r.set, { role: 'corner', rx: 20, w: 200, h: 100, sceneR: 40 }, 'local rx = 40 scene px / scale 2');
+  assert.equal(r.undone, null, 'undo removes it');
+  assert.deepEqual(r.redone, r.set, 'redo restores it');
+  assert.deepEqual(r.cropped, { role: 'corner', rx: 20, w: 100, h: 100, sceneR: 40 }, 'follows the crop window');
+  assert.equal(r.cleared, null, 'radius 0 drops the clip');
+});
+
+test('browser: Ctrl+wheel zooms one comfortable step per notch, not ×6', async () => {
+  // Regression: Ctrl+mouse-wheel arrives with ctrlKey and a full 120px notch, which the trackpad-
+  // pinch rate turned into ×6 per notch — eight notches went from 43% to the 500% cap.
+  const box = await page.locator('#cv').boundingBox();
+  await page.mouse.move(box.x + 100, box.y + 100);
+  const z0 = await page.evaluate(() => window.__ed.fc.getZoom());
+  await page.keyboard.down('Control'); await page.mouse.wheel(0, -120); await page.keyboard.up('Control');
+  await page.waitForTimeout(50);
+  const z1 = await page.evaluate(() => window.__ed.fc.getZoom());
+  assert.ok(z1 / z0 > 1.05 && z1 / z0 <= 1.25 + 1e-9, 'one notch in: ×' + (z1 / z0));
+  await page.keyboard.down('Control'); await page.mouse.wheel(0, 120); await page.keyboard.up('Control');
+  await page.waitForTimeout(50);
+  const z2 = await page.evaluate(() => window.__ed.fc.getZoom());
+  assert.ok(z2 / z1 < 0.95 && z2 / z1 >= 0.8 - 1e-9, 'one notch out: ×' + (z2 / z1));
+});
+
 test('browser: undo/redo reverts and reapplies a committed transform', async () => {
   await page.evaluate(() => window.__ed.setTool('rect'));
   const canvasBox = await page.locator('#cv').boundingBox();
@@ -412,7 +515,9 @@ test('browser: layers() nests group members as children, and member ops stay ins
   assert.deepEqual(r.group, { name: 'Group', isGroup: true, kids: ['gb', 'ga'], parent: true });
   assert.equal(r.hidden, false);
   assert.deepEqual(r.afterMove, ['ga', 'gb']);
-  assert.deepEqual(r.focus, { groupActive: true, childActive: true, gbActive: true });
+  // Member-focus model: focusing a member makes the MEMBER the active layer; its group reports childActive instead
+  // (active === the canvas's single active object), and the panels hand the highlight to the member's row.
+  assert.deepEqual(r.focus, { groupActive: false, childActive: true, gbActive: true });
   assert.deepEqual(r.afterUndo, ['gb', 'ga']);   // member ids survive a history round-trip
   assert.deepEqual(r.afterRemove, ['gb']);
   assert.equal(r.afterRemoveLast, 0);   // removing the last member removes the group
@@ -447,6 +552,53 @@ test('browser: toggleLayerSelection builds a multi-selection from layer ids, whi
   assert.equal(r.movedTop, true);
   assert.equal(r.group, 'ok');
   assert.deepEqual(r.kids, ['sb', 'sc']);
+});
+
+test('browser: canvas input is ignored while an undo/redo restore is still landing', async () => {
+  // Regression: a shape drawn right after Cmd+Z (before the async restore landed) was wiped by the
+  // restore and its commit dropped by the history lock — silently lost.
+  await page.evaluate(() => { window.__ed.setTool('rect'); window.__ed.history.lock = true; });
+  const box = await page.locator('#cv').boundingBox();
+  await page.mouse.move(box.x + 50, box.y + 50); await page.mouse.down(); await page.mouse.move(box.x + 150, box.y + 120, { steps: 4 }); await page.mouse.up();
+  const during = await page.evaluate(() => window.__ed.fc.getObjects().length);
+  await page.evaluate(() => { window.__ed.history.lock = false; });
+  await page.mouse.move(box.x + 50, box.y + 50); await page.mouse.down(); await page.mouse.move(box.x + 150, box.y + 120, { steps: 4 }); await page.mouse.up();
+  const after = await page.evaluate(() => window.__ed.fc.getObjects().length);
+  assert.equal(during, 0, 'nothing drawn while the restore is pending');
+  assert.equal(after, 1, 'drawing works again once it has landed');
+});
+
+test('browser: Space+drag starting over a selected layer pans the view without moving the layer', async () => {
+  // Regression: Fabric also grabbed the object under the pointer, so the pan dragged it off its spot.
+  await page.evaluate(() => { const ed = window.__ed, o = new window.fabric.Rect({ left: 50, top: 50, width: 200, height: 150, fill: '#c33', strokeWidth: 0 }); ed.fc.add(o); ed.fc.setActiveObject(o); ed.setTool('select'); });
+  const box = await page.locator('#cv').boundingBox();
+  const vpt0 = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  await page.mouse.move(box.x + 120, box.y + 120);
+  await page.keyboard.down('Space'); await page.mouse.down(); await page.mouse.move(box.x + 220, box.y + 160, { steps: 6 }); await page.mouse.up(); await page.keyboard.up('Space');
+  const r = await page.evaluate(() => { const o = window.__ed.fc.getObjects()[0]; return { left: o.left, top: o.top, vpt: window.__ed.fc.viewportTransform.slice(), skip: window.__ed.fc.skipTargetFind }; });
+  assert.notDeepEqual(r.vpt, vpt0, 'the view panned');
+  assert.deepEqual([r.left, r.top], [50, 50], 'the layer stayed put');
+  assert.equal(r.skip, false, 'hit-testing is back after Space');
+});
+
+test('browser: holding Space while editing a mask pans the view and leaves the mask untouched', async () => {
+  // Regression: the mask-edit branch ran before the Space-pan check, so Space+drag painted a stroke
+  // across the layer's mask instead of moving the view.
+  const r0 = await page.evaluate(async () => {
+    const ed = window.__ed, c = document.createElement('canvas'); c.width = 400; c.height = 300; c.getContext('2d').fillRect(0, 0, 400, 300);
+    const img = await ed.addImage(c.toDataURL()); ed.addMask(img.id); ed.enterMaskEdit(img.id); ed.setToolOptions({ color: '#000000', size: 40, hardness: 1 });
+    return { tool: ed.tool, id: img.id, mask: img.maskCanvas.toDataURL() };
+  });
+  assert.equal(r0.tool, 'brush');
+  const box = await page.locator('#cv').boundingBox();
+  const vptBefore = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  await page.mouse.move(box.x + 100, box.y + 100);
+  await page.keyboard.down('Space'); await page.waitForTimeout(30);
+  await page.mouse.down(); await page.mouse.move(box.x + 180, box.y + 150, { steps: 5 }); await page.mouse.up();
+  await page.keyboard.up('Space'); await page.waitForTimeout(50);
+  const r = await page.evaluate((id) => ({ vpt: window.__ed.fc.viewportTransform.slice(), mask: window.__ed._byId(id).maskCanvas.toDataURL() }), r0.id);
+  assert.notDeepEqual(r.vpt, vptBefore, 'the view panned');
+  assert.equal(r.mask, r0.mask, 'no stroke landed on the mask');
 });
 
 test('browser: holding Space pans the canvas with any tool active, without switching tools', async () => {
@@ -495,6 +647,29 @@ test('browser: Cmd/Ctrl+J copies the selected pixels of the active layer into a 
   // duplicateSelectionToLayer is non-destructive — the source rect is untouched
   const rectStillFull = await page.evaluate(() => window.__ed.fc.getObjects().find(o => o.type === 'rect').clipPath == null);
   assert.equal(rectStillFull, true);
+  // Regression: the selection stayed live, so picking Move next lifted the same pixels AGAIN — a
+  // hollowed-out copy plus a second "(moved)" layer. Layer via Copy deselects.
+  assert.equal(await page.evaluate(() => window.__ed.selection), null, 'Cmd+J deselects');
+  await page.keyboard.press('v');
+  assert.equal(await page.evaluate(() => window.__ed.layers().length), 2, 'Move after Cmd+J adds no layer');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getObjects().filter(o => o.clipPath).length), 0, 'nothing hollowed out');
+});
+
+test('browser: Cmd+J on a photo shown below its own size keeps the photo\'s detail', async () => {
+  // Regression: the copy was rendered at scene size, so a bag lifted from a photo fitted at 0.56×
+  // came out with ~0.56× the pixels — blurry the moment it was enlarged.
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, c = document.createElement('canvas'); c.width = 800; c.height = 600;
+    const x = c.getContext('2d'); for (let i = 0; i < 800; i += 2) { x.fillStyle = i % 4 ? '#000' : '#fff'; x.fillRect(i, 0, 2, 600); }   // 2px stripes: detail only full resolution holds
+    const img = await ed.addImage(c.toDataURL()); img.set({ left: 0, top: 0, scaleX: 0.25, scaleY: 0.25 }); img.setCoords();
+    ed.fc.setActiveObject(img);
+    ed.selection = { kind: 'rect', x: 10, y: 10, w: 100, h: 80 };
+    const id = ed.duplicateSelectionToLayer(), o = ed._byId(id);
+    return { natW: o._element.width, natH: o._element.height, w: o.getScaledWidth(), h: o.getScaledHeight(), role: o.role };
+  });
+  assert.equal(r.natW, 400, 'four source px per scene px'); assert.equal(r.natH, 320);
+  assert.ok(Math.abs(r.w - 100) < 1e-6 && Math.abs(r.h - 80) < 1e-6, 'same size on the page');
+  assert.equal(r.role, 'image', 'a piece of a photo is still a photo');
 });
 
 test('browser: Backspace with an active pixel selection cuts (clips) it from the active layer instead of deleting the whole layer', async () => {
@@ -778,6 +953,16 @@ test('browser: an adjustment layer survives undo/redo and stays live after reord
   assert.equal(params.brightness, 50);
 });
 
+/* Alpha of a layer's own (filtered) pixels at a SCENE point. A brush layer is trimmed to its stroke's
+   bounds, so its backing canvas is NOT artboard-sized: reading it at (150, 100) directly looks at the wrong
+   pixel (or off the edge). Map the scene point into the layer's own coordinates first. */
+const layerAlphaAt = (id, x, y) => page.evaluate(([id, x, y]) => {
+  const o = window.__ed.fc.getObjects().find(q => q.id === id), el = o._element, tl = o.getPointByOrigin('left', 'top');
+  const lx = Math.round((x - tl.x) / (o.scaleX || 1) + (o.cropX || 0)), ly = Math.round((y - tl.y) / (o.scaleY || 1) + (o.cropY || 0));
+  if (lx < 0 || ly < 0 || lx >= el.width || ly >= el.height) return 0;
+  return el.getContext('2d').getImageData(lx, ly, 1, 1).data[3];
+}, [id, x, y]);
+
 test('browser: addMask creates a blank mask that has no visual effect until painted', async () => {
   // A paint-role layer is the simplest maskable target to set up in this fixture (no image load).
   await page.evaluate(() => window.__ed.setTool('brush'));
@@ -789,19 +974,11 @@ test('browser: addMask creates a blank mask that has no visual effect until pain
   await page.waitForTimeout(50);
   const paintId = await page.evaluate(() => window.__ed.fc.getObjects().find(o => o.role === 'paint').id);
 
-  const beforeAlpha = await page.evaluate((id) => {
-    const o = window.__ed.fc.getObjects().find(x => x.id === id);
-    const c = o._element; const ctx = c.getContext('2d');
-    return ctx.getImageData(130, 100, 1, 1).data[3];
-  }, paintId);
+  const beforeAlpha = await layerAlphaAt(paintId, 130, 100);
   assert.ok(beforeAlpha > 0);   // the brush stroke painted something opaque here
 
   await page.evaluate((id) => window.__ed.addMask(id), paintId);
-  const afterAddAlpha = await page.evaluate((id) => {
-    const o = window.__ed.fc.getObjects().find(x => x.id === id);
-    const c = o._element; const ctx = c.getContext('2d');
-    return ctx.getImageData(130, 100, 1, 1).data[3];
-  }, paintId);
+  const afterAddAlpha = await layerAlphaAt(paintId, 130, 100);
   assert.equal(afterAddAlpha, beforeAlpha);   // a fresh mask is fully-visible: no change yet
 
   const hasMaskCanvas = await page.evaluate((id) => !!window.__ed.fc.getObjects().find(x => x.id === id).maskCanvas, paintId);
@@ -826,10 +1003,7 @@ test('browser: painting black into a mask hides the layer under the brush, white
   await page.mouse.down();
   await page.mouse.up();
   await page.waitForTimeout(50);
-  const hiddenAlpha = await page.evaluate((id) => {
-    const o = window.__ed.fc.getObjects().find(x => x.id === id);
-    return o._element.getContext('2d').getImageData(150, 100, 1, 1).data[3];
-  }, paintId);
+  const hiddenAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.equal(hiddenAlpha, 0);   // fully masked out at the painted spot
 
   // paint white (reveal) back over the same spot
@@ -838,10 +1012,7 @@ test('browser: painting black into a mask hides the layer under the brush, white
   await page.mouse.down();
   await page.mouse.up();
   await page.waitForTimeout(50);
-  const revealedAlpha = await page.evaluate((id) => {
-    const o = window.__ed.fc.getObjects().find(x => x.id === id);
-    return o._element.getContext('2d').getImageData(150, 100, 1, 1).data[3];
-  }, paintId);
+  const revealedAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.ok(revealedAlpha > 200);   // back to (near-)fully visible
 
   await page.evaluate(() => window.__ed.exitMaskEdit());
@@ -864,15 +1035,15 @@ test('browser: setMaskEnabled(false) restores full visibility without discarding
   await page.waitForTimeout(50);
   await page.evaluate(() => window.__ed.exitMaskEdit());
 
-  const maskedAlpha = await page.evaluate((id) => window.__ed.fc.getObjects().find(x => x.id === id)._element.getContext('2d').getImageData(150, 100, 1, 1).data[3], paintId);
+  const maskedAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.equal(maskedAlpha, 0);
 
   await page.evaluate((id) => window.__ed.setMaskEnabled(id, false), paintId);
-  const disabledAlpha = await page.evaluate((id) => window.__ed.fc.getObjects().find(x => x.id === id)._element.getContext('2d').getImageData(150, 100, 1, 1).data[3], paintId);
+  const disabledAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.ok(disabledAlpha > 200);   // disabling shows the full layer again
 
   await page.evaluate((id) => window.__ed.setMaskEnabled(id, true), paintId);
-  const reenabledAlpha = await page.evaluate((id) => window.__ed.fc.getObjects().find(x => x.id === id)._element.getContext('2d').getImageData(150, 100, 1, 1).data[3], paintId);
+  const reenabledAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.equal(reenabledAlpha, 0);   // re-enabling brings back the SAME painted mask, not a blank one
 });
 
@@ -906,10 +1077,7 @@ test('browser: removeMask restores full visibility and addMask/removeMask no-op 
   await page.waitForTimeout(50);
   await page.evaluate(() => window.__ed.exitMaskEdit());
   await page.evaluate((id) => window.__ed.removeMask(id), paintId);
-  const afterRemove = await page.evaluate((id) => {
-    const o = window.__ed.fc.getObjects().find(x => x.id === id);
-    return { hasMaskCanvas: !!o.maskCanvas, alpha: o._element.getContext('2d').getImageData(330, 100, 1, 1).data[3] };
-  }, paintId);
+  const afterRemove = { hasMaskCanvas: await page.evaluate((id) => !!window.__ed.fc.getObjects().find(x => x.id === id).maskCanvas, paintId), alpha: await layerAlphaAt(paintId, 330, 100) };
   assert.equal(afterRemove.hasMaskCanvas, false);
   assert.ok(afterRemove.alpha > 200);   // removing the mask restores full visibility
 });
@@ -931,18 +1099,59 @@ test('browser: a painted mask survives undo/redo (Fabric filter fromObject round
   await page.waitForTimeout(50);
   await page.evaluate(() => window.__ed.exitMaskEdit());
 
-  const beforeUndoAlpha = await page.evaluate((id) => window.__ed.fc.getObjects().find(x => x.id === id)._element.getContext('2d').getImageData(150, 100, 1, 1).data[3], paintId);
+  const beforeUndoAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.equal(beforeUndoAlpha, 0);
 
   await page.evaluate(() => window.__ed.undo());
   await page.waitForTimeout(150);   // restore()/loadFromJSON + the mask filter's own async fromObject
-  const afterUndoAlpha = await page.evaluate((id) => window.__ed.fc.getObjects().find(x => x.id === id)._element.getContext('2d').getImageData(150, 100, 1, 1).data[3], paintId);
+  const afterUndoAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.ok(afterUndoAlpha > 200);   // back to before the mask stroke (mask still present, just unpainted there)
 
   await page.evaluate(() => window.__ed.redo());
   await page.waitForTimeout(150);
-  const afterRedoAlpha = await page.evaluate((id) => window.__ed.fc.getObjects().find(x => x.id === id)._element.getContext('2d').getImageData(150, 100, 1, 1).data[3], paintId);
+  const afterRedoAlpha = await layerAlphaAt(paintId, 150, 100);
   assert.equal(afterRedoAlpha, 0);   // the painted-black mask stroke is back
+});
+
+/* A web font that isn't loaded yet when text is laid out (a restored session, a lazily-fetched
+   Google font) left Fabric with the fallback face's widths: the box was too narrow, Center H was
+   off, and the cached render clipped the last letters. The face here is a monospace TTF served with
+   a delay, registered but not loaded — the state a reload leaves a Google font in. */
+const SLOW_FONT_FILE = ['/System/Library/Fonts/Supplemental/Courier New.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf'].find(f => existsSync(f));
+async function slowFace(family) {
+  const body = readFileSync(SLOW_FONT_FILE);
+  await page.route('**/__slow-font/' + family + '.ttf', (route) => setTimeout(() => route.fulfill({ body, contentType: 'font/ttf' }).catch(() => {}), 600));
+  return page.evaluate((family) => { const f = new FontFace(family, `url(/__slow-font/${family}.ttf)`); document.fonts.add(f); return f.status; }, family);
+}
+const textWidths = (family) => {
+  const o = window.__ed.fc.getObjects().find(x => x.type === 'i-text');
+  const c = document.createElement('canvas').getContext('2d'); c.font = `${o.fontWeight} ${o.fontSize}px ${family}`;
+  return { fabric: Math.round(o.width), real: Math.round(c.measureText(o.text).width) };
+};
+
+test('browser: text restored before its web font loaded is re-measured once the font is in', { skip: !SLOW_FONT_FILE && 'no monospace TTF on this machine' }, async () => {
+  assert.equal(await slowFace('CmTestMonoA'), 'unloaded');
+  await page.evaluate(() => {
+    const scene = { version: '5.3.0', objects: [{ type: 'i-text', text: 'Wide mono words here', left: 10, top: 10, fontSize: 30, fontFamily: 'CmTestMonoA, sans-serif', fontWeight: 'normal' }] };
+    window.__ed.loadJSON(JSON.stringify({ w: 400, h: 300, scene }));
+  });
+  await page.waitForFunction(() => window.__ed.fc.getObjects().some(o => o.type === 'i-text') && document.fonts.check('16px CmTestMonoA'), null, { timeout: 5000 });
+  await page.waitForTimeout(150);
+  const w = await page.evaluate(textWidths, 'CmTestMonoA');
+  assert.ok(Math.abs(w.fabric - w.real) <= 1, `box matches the loaded face: ${JSON.stringify(w)}`);
+});
+
+test('browser: setTextProps to a not-yet-loaded web font loads it and re-measures the text', { skip: !SLOW_FONT_FILE && 'no monospace TTF on this machine' }, async () => {
+  await slowFace('CmTestMonoB');
+  await page.evaluate(() => {
+    const ed = window.__ed, t = new window.fabric.IText('Wide mono words here', { left: 10, top: 10, fontSize: 30, fontFamily: 'Arial, sans-serif' });
+    ed.fc.add(t); ed.fc.setActiveObject(t);
+    ed.setTextProps({ fontFamily: 'CmTestMonoB, sans-serif' });
+  });
+  await page.waitForFunction(() => document.fonts.check('16px CmTestMonoB'), null, { timeout: 5000 });
+  await page.waitForTimeout(150);
+  const w = await page.evaluate(textWidths, 'CmTestMonoB');
+  assert.ok(Math.abs(w.fabric - w.real) <= 1, `box matches the loaded face: ${JSON.stringify(w)}`);
 });
 
 test('browser: setTextProps edits a text layer and no-ops on a shape', async () => {
@@ -1151,6 +1360,140 @@ test('browser: every STICKER_GROUPS key places without error and resolves a real
   assert.deepEqual(result.missing, []);
   assert.deepEqual(result.failed, []);
   assert.ok(result.groupCount >= 6);   // sale bursts, badges&tags, ribbons&banners, price tags, arrows, accents
+});
+
+test('browser: a baked-text sticker — double-click retypes its label, Fill recolours its shape (not the invisible group fill)', async () => {
+  // Regressions: double-clicking the sticker did nothing, so the letters typed next fired tool
+  // shortcuts (B brush, A wand, G bucket, S clone); and Fill set the GROUP's fill, which Fabric
+  // never paints, while the panel showed #000000.
+  const id = await page.evaluate(() => { const ed = window.__ed; const id = ed.addSticker('burstText', { x: 200, y: 150 }); ed.setTool('select'); return id; });
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  const at = [box.x + vt[4] + 200 * vt[0], box.y + vt[5] + 150 * vt[3]];
+  await page.mouse.dblclick(...at); await page.waitForTimeout(100);
+  const editing = await page.evaluate(() => { const a = window.__ed.fc.getActiveObject(); return { type: a.type, editing: !!a.isEditing, sel: a.text.slice(a.selectionStart, a.selectionEnd) }; });
+  assert.deepEqual(editing, { type: 'i-text', editing: true, sel: 'SALE' });
+  await page.keyboard.type('BAGS'); await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => window.__ed.tool), 'select', 'typing went into the label, not to tool shortcuts');
+  await page.mouse.click(box.x + 5, box.y + 5); await page.waitForTimeout(50);   // deselect: the label goes back in
+  const g = await page.evaluate((id) => { const ed = window.__ed, g = ed._byId(id); return { kids: g._objects.map(k => k.type), text: g._objects.find(k => k.text).text, iso: ed._iso.length, top: ed.fc.getObjects().length }; }, id);
+  assert.deepEqual(g, { kids: ['polygon', 'i-text'], text: 'BAGS', iso: 0, top: 1 });
+  const fill = await page.evaluate((id) => { const ed = window.__ed; ed.activate(id); ed.setFill('#f4eedf'); const g = ed._byId(id); return { group: g.fill, shape: g._objects[0].fill, ink: g._objects[1].fill }; }, id);
+  assert.deepEqual(fill, { group: '#f4eedf', shape: '#f4eedf', ink: '#0c0c0e' }, 'shape recoloured, label ink flipped for contrast');
+  const label = await page.evaluate(() => window.__ed.layers()[0]);
+  assert.equal(label.name, 'Sticker'); assert.equal(label.subtitle, 'Sticker');
+});
+
+test('browser: eyedropper picked with a shape selected fills that shape and hands it back selected', async () => {
+  // Regression: picking the eyedropper deselected the shape and only changed the brush colour —
+  // there was no way to put the sampled colour on the shape short of typing the hex.
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, f = window.fabric;
+    const swatch = new f.Rect({ left: 300, top: 200, width: 60, height: 60, fill: '#c9a24a', strokeWidth: 0 });
+    const btn = new f.Rect({ left: 20, top: 20, width: 120, height: 50, fill: '#000000', strokeWidth: 0 });
+    btn.set({ id: 'btn' }); ed.fc.add(swatch, btn); ed.commit('add');
+    ed.activate('btn'); ed.setTool('eyedropper');
+    return { tool: ed.tool };
+  });
+  assert.equal(r.tool, 'eyedropper');
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  await page.mouse.click(box.x + vt[4] + 330 * vt[0], box.y + vt[5] + 230 * vt[3]);
+  const after = await page.evaluate(() => { const ed = window.__ed; return { tool: ed.tool, active: ed.fc.getActiveObject()?.id, fill: ed._byId('btn').fill, brush: ed.toolOpts.color }; });
+  assert.deepEqual(after, { tool: 'select', active: 'btn', fill: '#c9a24a', brush: '#c9a24a' });
+  // nothing selected: only the brush colour changes, as before
+  await page.evaluate(() => { const ed = window.__ed; ed.fc.discardActiveObject(); ed.setTool('eyedropper'); });
+  await page.mouse.click(box.x + vt[4] + 80 * vt[0], box.y + vt[5] + 45 * vt[3]);
+  assert.equal(await page.evaluate(() => window.__ed.tool), 'eyedropper');
+  assert.equal(await page.evaluate(() => window.__ed._byId('btn').fill), '#c9a24a');
+});
+
+test('browser: End / Home with a word highlighted go to the line edge (double-click, End, type appends)', async () => {
+  // Regression: Fabric only collapsed the highlight, so "double-click the text, End, type" inserted
+  // mid-line: "Shop now" + " →" became "Shop → now".
+  await page.evaluate(() => { const ed = window.__ed, t = new window.fabric.IText('Shop now', { left: 20, top: 20, fontSize: 40 }); ed.fc.add(t); ed.fc.setActiveObject(t); t.enterEditing(); t.selectionStart = 0; t.selectionEnd = 4; });
+  await page.keyboard.press('End'); await page.keyboard.type(' →');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().text), 'Shop now →');
+  await page.evaluate(() => { const t = window.__ed.fc.getActiveObject(); t.selectionStart = 5; t.selectionEnd = 8; });
+  await page.keyboard.press('Home'); await page.keyboard.type('» ');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().text), '» Shop now →');
+});
+
+test('browser: spot heal (no source picked) fills the stroke from its surroundings', async () => {
+  // Regression: "Spot heal" was a healing brush — the first press silently became the source and
+  // the next stroke cloned/blurred whatever sat beside it, leaving a pale smudge over the spot.
+  const id = await page.evaluate(async () => {
+    const ed = window.__ed, c = document.createElement('canvas'); c.width = 400; c.height = 300;
+    const x = c.getContext('2d'); x.fillStyle = '#12301f'; x.fillRect(0, 0, 400, 300);
+    x.fillStyle = '#e8f0d8'; x.font = 'bold 40px sans-serif'; x.fillText('Coconut', 120, 165);   // the spot to remove
+    x.fillStyle = '#e8f0d8'; x.fillRect(120, 60, 160, 20);                                       // light pixels NEAR it a source could grab
+    const img = await ed.addImage(c.toDataURL()); img.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); img.setCoords();
+    ed.fc.setActiveObject(img); ed.setTool('heal'); ed.setToolOptions({ size: 56, hardness: 0.8, opacity: 1 });
+    return img.id;
+  });
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  const S = (x, y) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+  await page.mouse.move(...S(112, 152)); await page.mouse.down(); await page.mouse.move(...S(290, 152), { steps: 12 }); await page.mouse.up();
+  await page.waitForTimeout(100);
+  const r = await page.evaluate((id) => {
+    const ed = window.__ed, o = ed._byId(id), el = o._element, c = document.createElement('canvas'); c.width = el.width; c.height = el.height;
+    const x = c.getContext('2d'); x.drawImage(el, 0, 0); const d = x.getImageData(115, 135, 175, 40).data;
+    let maxL = 0; for (let i = 0; i < d.length; i += 4) maxL = Math.max(maxL, (d[i] + d[i + 1] + d[i + 2]) / 3);
+    return { maxL: Math.round(maxL), src: ed.cloneSource };
+  }, id);
+  assert.equal(r.src, null, 'no source was needed');
+  assert.ok(r.maxL < 60, 'the light lettering is gone, filled with the dark surroundings (brightest px ' + r.maxL + ')');
+});
+
+test('browser: a shape with no visible fill is clickable on its border only — text inside it can be clicked', async () => {
+  // Regression: a dashed "USE CODE" outline (fill alpha 0) sat over its own text, so clicking or
+  // shift-clicking the text always hit the outline instead.
+  await page.evaluate(() => {
+    const ed = window.__ed, f = window.fabric;
+    const t = new f.IText('USE CODE', { left: 120, top: 130, fontSize: 30 }); t.set({ id: 'txt' });
+    const r = new f.Rect({ left: 90, top: 110, width: 220, height: 80, fill: '#000000', stroke: '#d4b072', strokeWidth: 3 }); r.set({ id: 'pill' });
+    ed.fc.add(t, r); ed.activate('pill'); ed.setFill('rgba(0,0,0,0)'); ed.fc.discardActiveObject();
+  });
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  const S = (x, y) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+  await page.mouse.click(...S(150, 148));
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject()?.id), 'txt', 'the text inside is what a click hits');
+  await page.evaluate(() => window.__ed.fc.discardActiveObject());
+  await page.mouse.click(...S(200, 111.5));
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject()?.id), 'pill', 'the border still grabs the outline');
+  // a solid fill makes the whole box clickable again
+  await page.evaluate(() => { const ed = window.__ed; ed.activate('pill'); ed.setFill('#123456'); ed.fc.discardActiveObject(); });
+  await page.mouse.click(...S(150, 148));
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject()?.id), 'pill');
+});
+
+test('browser: a price / CTA is editable — double-click retypes a part and it re-flows; Fill recolours it', async () => {
+  // Regression: ad-copy groups were built from plain fabric.Text, so a price inserted as $29 / $40
+  // could never be changed; Fill set the group's invisible fill (panel showed #000000).
+  const id = await page.evaluate(() => { const ed = window.__ed; const id = ed.addPrice({ x: 200, y: 150 }, { current: '$29', original: '$40', save: 'Save 27%', size: 28 }); ed.setTool('select'); return id; });
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  const partAt = (i) => page.evaluate(([id, i]) => { const m = window.__ed._byId(id)._objects[i].calcTransformMatrix(); return [m[4], m[5]]; }, [id, i]);
+  const S = ([x, y]) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+  const before = await page.evaluate((id) => window.__ed._byId(id)._objects.map(k => k.left), id);
+  await page.mouse.dblclick(...S(await partAt(0))); await page.waitForTimeout(80);
+  assert.deepEqual(await page.evaluate(() => { const a = window.__ed.fc.getActiveObject(); return [a.type, a.isEditing, a.text.slice(a.selectionStart, a.selectionEnd)]; }), ['i-text', true, '$29']);
+  await page.keyboard.type('₹1,499'); await page.keyboard.press('Escape'); await page.waitForTimeout(80);
+  const after = await page.evaluate((id) => { const ed = window.__ed, g = ed._byId(id); return { texts: g._objects.map(k => k.text), lefts: g._objects.map(k => k.left), n: ed.fc.getObjects().length, json: ed.toJSON().includes('₹1,499') }; }, id);
+  assert.deepEqual(after.texts, ['₹1,499', '$40', 'Save 27%']);
+  assert.ok(after.lefts[1] > before[1], 'the parts after it moved right to make room');
+  assert.equal(after.n, 1, 'no editing layer left behind'); assert.ok(after.json, 'saved');
+  assert.deepEqual(await page.evaluate(() => { const ed = window.__ed; ed.undo(); return null; }), null);
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate((id) => window.__ed._byId(id)._objects[0].text, id), '$29', 'one undo step');
+  await page.evaluate(() => window.__ed.redo()); await page.waitForTimeout(150);
+  const fill = await page.evaluate((id) => { const ed = window.__ed; ed.activate(id); ed.setFill('#f4eedf'); const g = ed.fc.getActiveObject(); return { id: g.id, group: g.fill, cur: g._objects[0].fill, text: g._objects[0].text }; }, id);
+  assert.deepEqual(fill, { id, group: '#f4eedf', cur: '#f4eedf', text: '₹1,499' });
+  // a CTA pill grows with its label
+  const cta = await page.evaluate(() => { const ed = window.__ed; const id = ed.addCTA ? ed.addCTA({ x: 200, y: 250 }, { text: 'Buy', size: 24 }) : null; if (!id) return null; const w0 = ed._byId(id).getScaledWidth(); const ng = ed._rebuildAd(ed._byId(id), { text: 'Shop the festive sale' }); return { w0, w1: ng.getScaledWidth(), text: ng._objects[1].text }; });
+  if (cta) { assert.ok(cta.w1 > cta.w0 + 50, 'pill widened: ' + JSON.stringify(cta)); assert.equal(cta.text, 'Shop the festive sale'); }
 });
 
 test('browser: a plain (non-text) sticker is a single recolorable shape, not a group', async () => {
@@ -2124,14 +2467,16 @@ test('browser: removeBackground via an AI provider keys the green screen into a 
   const id = await addTestImage("ctx.fillStyle='#c33';ctx.fillRect(0,0,w,h)");
   await page.evaluate(() => window.__ed.ai.register({
     hasKey: () => true,
-    // subject on the right half, pure green where the background was
-    removeBackground: async (url) => { const c = document.createElement('canvas'); c.width = 80; c.height = 60; const x = c.getContext('2d'); x.fillStyle = '#00ff00'; x.fillRect(0, 0, 40, 60); x.fillStyle = '#c33'; x.fillRect(40, 0, 40, 60); return c.toDataURL(); },
+    // a subject block in the middle, pure green all round it (what a green-screen cutout looks like). The old
+    // fixture was half green / half red, which makes the border ring an exact 50/50 tie: the median background
+    // colour then lands on neither half and nothing is keyed.
+    removeBackground: async (url) => { const c = document.createElement('canvas'); c.width = 80; c.height = 60; const x = c.getContext('2d'); x.fillStyle = '#00ff00'; x.fillRect(0, 0, 80, 60); x.fillStyle = '#c33'; x.fillRect(30, 10, 40, 40); return c.toDataURL(); },
   }));
   const r = await page.evaluate(async () => { const d0 = window.__ed.history.depth().past; const r = await window.__ed.removeBackground(); return { ...r, d: window.__ed.history.depth().past - d0, layer: window.__ed.layers().find(l => l.active) }; });
-  assert.equal(r.status, 'ok'); assert.equal(r.method, 'ai'); assert.equal(r.d, 1);
+  assert.equal(r.status, 'ok', JSON.stringify(r)); assert.equal(r.method, 'ai'); assert.equal(r.d, 1);
   assert.equal(r.layer.hasMask, true); assert.match(r.layer.subtitle, /Masked image/);
-  assert.equal(await filteredAlpha(id, 8, 30), 0, 'green half hidden');
-  assert.equal(await filteredAlpha(id, 72, 30), 255, 'subject half kept');
+  assert.equal(await filteredAlpha(id, 8, 30), 0, 'green surround hidden');
+  assert.equal(await filteredAlpha(id, 50, 30), 255, 'subject block kept');
 });
 
 test('browser: removeBackground falls back to the local GrabCut cutout when AI fails', async () => {
@@ -2144,6 +2489,17 @@ test('browser: removeBackground falls back to the local GrabCut cutout when AI f
 });
 
 /* ── offline background removal (cv worker cutout / cutRefine) ───────────────────────────── */
+// A pale bottle on a pale-green gradient between a gold collar and a stone stand, plus one small
+// flying almond — the shape of a typical cosmetics product shot. Installs window.__paleScene(ctx).
+const PALE_SCENE = () => {
+  window.__paleScene = (x) => {
+    const g = x.createLinearGradient(0, 0, 400, 500); g.addColorStop(0, '#dfead8'); g.addColorStop(1, '#bcd3b0'); x.fillStyle = g; x.fillRect(0, 0, 400, 500);
+    x.fillStyle = '#eef3ea'; x.fillRect(150, 120, 100, 260);                                             // the pale body
+    x.fillStyle = '#a8842f'; x.fillRect(170, 80, 60, 40);                                                // gold collar
+    x.fillStyle = '#7c7a70'; x.beginPath(); x.ellipse(200, 395, 120, 28, 0, 0, 7); x.fill();             // stone stand
+    x.fillStyle = '#8f4f22'; x.beginPath(); x.ellipse(70, 110, 6, 4, 0.5, 0, 7); x.fill();               // a flying almond (too small to pass on size alone)
+  };
+};
 test('browser: offline removeBackground keys a plain backdrop — inner same-colour areas stay, soft edges, decontam, invert drops it', async () => {
   const id = await addTestImage("ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);ctx.fillStyle='#c0392b';ctx.fillRect(100,50,100,100);ctx.fillStyle='#ffffff';ctx.fillRect(120,90,60,20);ctx.fillStyle='#1f6f3f';ctx.beginPath();ctx.arc(250,150,30,0,7);ctx.fill()", 300, 200);
   const r = await page.evaluate(async (id) => {
@@ -2194,7 +2550,100 @@ test('browser: offline cutout on a poster keeps small separate elements (logo, i
   assert.ok(noise < 30, 'faint speckle stays removed: ' + noise + ' opaque px');
 });
 
-test('browser: offline cutout on a busy backdrop (GrabCut), Keep/Remove touch-ups re-cut around the stroke, serialized, off after undo', async () => {
+test('browser: offline cutout on an image that is already transparent keeps it as-is (black outlines included)', async () => {
+  // Regression: a transparent PNG icon's clear pixels carry RGB 0,0,0, so the cut keyed "black" as the
+  // backdrop and took every black outline with it.
+  const id = await addTestImage("ctx.clearRect(0,0,w,h);ctx.fillStyle='#1565d8';ctx.beginPath();ctx.arc(150,100,60,0,7);ctx.fill();ctx.lineWidth=10;ctx.strokeStyle='#000';ctx.stroke()", 300, 200);
+  const r = await page.evaluate((id) => window.__ed.removeBackground({ method: 'local', id }), id);
+  assert.equal(r.status, 'ok', JSON.stringify(r)); assert.equal(r.detail, 'alpha');
+  assert.equal(await filteredAlpha(id, 150, 100), 255, 'fill kept');
+  assert.equal(await filteredAlpha(id, 150, 40), 255, 'black outline kept');
+  assert.equal(await filteredAlpha(id, 10, 10), 0, 'clear stays clear');
+});
+
+test('browser: the flattened scene clone/heal sample from includes layers below the stage height', async () => {
+  // Regression: Fabric culled objects against the <canvas> element (the stage), so on a page taller
+  // than the stage everything below its height was missing — clone stamped backdrop instead.
+  const px = await page.evaluate(() => {
+    const ed = window.__ed; ed.resizeCanvas(400, 1200, { anchor: 'top-left' });
+    ed.fc.add(new window.fabric.Rect({ left: 50, top: 1000, width: 100, height: 100, fill: '#ff0000', strokeWidth: 0 }));
+    ed.engine.captureFlat();
+    return Array.from(ed.engine._flat.getContext('2d').getImageData(100, 1050, 1, 1).data);
+  });
+  assert.deepEqual(px, [255, 0, 0, 255]);
+});
+
+test('browser: retouching a cropped image keeps its whole source and crop window (it no longer goes blank)', async () => {
+  // Regression: clone/heal/dodge wrote back only the crop window as the new source but kept cropX/cropY,
+  // which then pointed past its edge — the layer turned invisible after one stroke.
+  const id = await addTestImage("ctx.fillStyle='#c0392b';ctx.fillRect(0,0,200,200);ctx.fillStyle='#2c7be5';ctx.fillRect(200,0,200,200)", 400, 200);
+  await page.evaluate((id) => { const ed = window.__ed, o = ed._byId(id); ed.fc.setActiveObject(o); ed.setTool('crop'); const b = o.getBoundingRect(true, true); ed.crop = { x: b.left + b.width / 2, y: b.top, w: b.width / 2, h: b.height }; ed.applyCrop(); }, id);
+  const before = await page.evaluate((id) => { const o = window.__ed._byId(id); return { cropX: o.cropX, w: o.width, el: o._element.width }; }, id);
+  assert.deepEqual(before, { cropX: 200, w: 200, el: 400 });
+  await page.evaluate((id) => { const ed = window.__ed; ed.fc.setActiveObject(ed._byId(id)); ed.setTool('dodge'); ed.setToolOptions({ size: 30, opacity: 1 }); }, id);
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  const c = await page.evaluate((id) => { const b = window.__ed._byId(id).getBoundingRect(true, true); return [b.left + b.width / 2, b.top + b.height / 2]; }, id);
+  const at = (x, y) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+  await page.mouse.move(...at(c[0] - 10, c[1])); await page.mouse.down(); await page.mouse.move(...at(c[0] + 10, c[1]), { steps: 4 }); await page.mouse.up();
+  await page.waitForTimeout(100);
+  const after = await page.evaluate((id) => {
+    const o = window.__ed._byId(id), el = o._element, x = document.createElement('canvas').getContext('2d');
+    x.canvas.width = el.width; x.canvas.height = el.height; x.drawImage(el, 0, 0);
+    const px = x.getImageData(300, 100, 1, 1).data, untouched = x.getImageData(50, 100, 1, 1).data;
+    return { cropX: o.cropX, w: o.width, el: el.width, px: Array.from(px), untouched: Array.from(untouched) };
+  }, id);
+  assert.equal(after.el, 400, 'the source stays whole');
+  assert.equal(after.cropX, 200); assert.equal(after.w, 200);
+  assert.equal(after.px[3], 255, 'the visible window still has its pixels');
+  assert.ok(after.px[2] > 200 && after.px[0] > 44, 'dodged blue is lighter: ' + after.px);
+  assert.deepEqual(after.untouched, [192, 57, 43, 255], 'the hidden half is untouched');
+});
+
+test('browser: Keep/Remove touch-ups still work after undoing a touch-up stroke', async () => {
+  // Regression: undo rebuilds the layer, so the cut-out lost its link to it and Keep/Remove vanished
+  // after any undo — right when a wrong stroke had just been undone.
+  const id = await addTestImage("ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);ctx.fillStyle='#c0392b';ctx.fillRect(100,60,120,90);ctx.fillStyle='#2c7be5';ctx.fillRect(250,70,30,30)", 400, 300);
+  const r = await page.evaluate((id) => window.__ed.removeBackground({ method: 'local', id }), id);
+  assert.equal(r.status, 'ok', JSON.stringify(r));
+  await page.evaluate((id) => window.__ed.enterMaskEdit(id), id);
+  assert.equal(await page.evaluate(() => window.__ed.toolOpts.maskRefine), 'keep');
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  const at = (x, y) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+  const layerAt = (x, y) => page.evaluate(([id, x, y]) => { const o = window.__ed._byId(id), m = o.calcTransformMatrix(); return [m[4] + (x - o.width / 2) * m[0], m[5] + (y - o.height / 2) * m[3]]; }, [id, x, y]);
+  const stroke = async (pts) => {
+    const d0 = await page.evaluate(() => window.__ed.history.depth().past);
+    const sp = []; for (const p of pts) sp.push(at(...(await layerAt(...p))));
+    await page.mouse.move(...sp[0]); await page.mouse.down(); for (const p of sp.slice(1)) await page.mouse.move(...p, { steps: 4 }); await page.mouse.up();
+    await page.waitForFunction((d0) => window.__ed.history.depth().past > d0, d0, { timeout: 15000 });
+  };
+  await stroke([[20, 20], [60, 20]]);                                   // a Keep stroke on backdrop — the wrong one
+  await page.evaluate(() => window.__ed.undo());
+  await page.waitForFunction(() => window.__ed.canRefineCutout(), null, { timeout: 5000 });
+  assert.equal(await page.evaluate(() => window.__ed.setMaskRefine('remove')), true);
+  await stroke([[255, 75], [275, 95]]);                                 // Remove the blue square
+  assert.equal(await filteredAlpha(id, 265, 85), 0, 'blue square removed after the undo');
+  assert.equal(await filteredAlpha(id, 160, 100), 255, 'red square still kept');
+  assert.equal(await filteredAlpha(id, 40, 20), 0, 'the undone Keep stroke left no trace');
+});
+
+test('browser: offline cutout keeps a pale product on a gradient backdrop by its outline', async () => {
+  // Regression: a white bottle on a pale-green gradient scored below the props around it on colour
+  // distance, so the cut kept the collar and the stand and dropped the bottle.
+  await page.evaluate(PALE_SCENE);
+  await page.evaluate(async () => { const c = document.createElement('canvas'); c.width = 400; c.height = 500; window.__paleScene(c.getContext('2d')); await window.__ed.openImage(c.toDataURL('image/png')); });
+  const id = await page.evaluate(() => { const o = window.__ed.fc.getObjects().find(q => q.type === 'image'); window.__ed.fc.setActiveObject(o); return o.id; });
+  const r = await page.evaluate((id) => window.__ed.removeBackground({ method: 'local', id }), id);
+  assert.equal(r.status, 'ok', JSON.stringify(r)); assert.equal(r.detail, 'grabcut');
+  assert.ok(await filteredAlpha(id, 200, 250) > 200, 'pale body kept');
+  assert.ok(await filteredAlpha(id, 200, 100) > 200, 'collar kept');
+  assert.ok(await filteredAlpha(id, 70, 110) > 200, 'almond kept');
+  assert.equal(await filteredAlpha(id, 20, 20), 0, 'backdrop removed');
+  assert.equal(await filteredAlpha(id, 330, 250), 0, 'backdrop beside the body removed');
+});
+
+test('browser: offline cutout on a busy backdrop (GrabCut), Keep/Remove touch-ups re-cut around the stroke, serialized, survive undoing a stroke, off once the cut is undone', async () => {
   await page.evaluate(async () => {
     const c = document.createElement('canvas'); c.width = 400; c.height = 300; const x = c.getContext('2d');
     const g = x.createLinearGradient(0, 0, 400, 300); g.addColorStop(0, '#5a86c8'); g.addColorStop(1, '#a8c97a'); x.fillStyle = g; x.fillRect(0, 0, 400, 300);
@@ -2229,11 +2678,15 @@ test('browser: offline cutout on a busy backdrop (GrabCut), Keep/Remove touch-up
   const after = await page.evaluate(async () => {
     const ed = window.__ed, json = ed.toJSON();
     ed.undo(); await new Promise(r => setTimeout(r, 400));   // undo restores the scene asynchronously
-    return { serialized: json.includes('decontamDataURL'), canRefine: ed.canRefineCutout(), refineSet: ed.setMaskRefine('keep') };
+    const afterStrokeUndo = { canRefine: ed.canRefineCutout(), refineSet: ed.setMaskRefine('keep') };
+    for (let i = 0; i < 2; i++) { ed.undo(); await new Promise(r => setTimeout(r, 400)); }   // ...and the Remove stroke, and the cut itself
+    return { serialized: json.includes('decontamDataURL'), afterStrokeUndo, noCut: { canRefine: ed.canRefineCutout(), refineSet: ed.setMaskRefine('keep') } };
   });
   assert.ok(after.serialized, 'the edge-colour fix is saved with the mask');
-  assert.equal(after.canRefine, false, 'touch-ups need the live cutout — not after an undo');
-  assert.equal(after.refineSet, false);
+  // undoing a touch-up stroke keeps touch-ups going on the restored mask...
+  assert.deepEqual(after.afterStrokeUndo, { canRefine: true, refineSet: true });
+  // ...but with the cut-out undone too there is nothing left to touch up
+  assert.deepEqual(after.noCut, { canRefine: false, refineSet: false });
 });
 
 test('browser: mask brush strokes land under the pointer on a fitted / offset / scaled image (not at artboard px)', async () => {
@@ -2336,6 +2789,36 @@ test('browser: crop tool on a selected shape clips the shape, not the artboard',
   assert.equal(r.clipWhileCropping, false);
   assert.equal(r.restored, 'crop');
   assert.ok(r.json, 'crop clip survives serialisation');
+});
+
+test('browser: cropping an image — a ratio chip reshapes the box at once, Original is the image\'s shape, the box stays on the image, whole-pixel result', async () => {
+  // Regressions: picking 4:5 did nothing until a handle drag; "Original" used the page's ratio (so it
+  // lit up together with 4:5 on a 4:5 page); the box could be dragged off the image; and the applied
+  // crop landed on fractional source pixels (cropY 300.56), resampling the image.
+  const src = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 720; c.height = 1280; const x = c.getContext('2d'); x.fillStyle = '#3a6'; x.fillRect(0, 0, 720, 1280); return c.toDataURL(); });
+  await page.evaluate(async (src) => { const ed = window.__ed; ed.resizeCanvas(1080, 1350); const img = await ed.openImage(src); ed.fc.setActiveObject(img); }, src);
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, img = ed.fc.getObjects()[0];
+    ed.setTool('crop');
+    const orig = ed.cropOriginalRatio(), b = img.getBoundingRect(true, true);
+    ed.setToolOptions({ cropRatio: 4 / 5 });
+    const fitted = { ...ed.crop };
+    return { orig, b: { x: b.left, y: b.top, w: b.width, h: b.height }, fitted };
+  });
+  assert.ok(Math.abs(r.orig - 720 / 1280) < 1e-6, 'Original = the image\'s 9:16, not the 4:5 page: ' + r.orig);
+  assert.ok(Math.abs(r.fitted.w / r.fitted.h - 0.8) < 1e-6, 'box reshaped to 4:5 straight away');
+  assert.ok(Math.abs(r.fitted.w - r.b.w) < 1e-6, 'as wide as the image');
+  // drag the box body far past the bottom of the image: it stops at the image's edge
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => { const fc = window.__ed.fc; fc.setViewportTransform([0.2, 0, 0, 0.2, 0, 0]); return fc.viewportTransform.slice(); });   // whole page on the 400×300 element
+  const at = (x, y) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+  const [cx, cy] = at(r.fitted.x + r.fitted.w / 2, r.fitted.y + r.fitted.h / 2);
+  await page.mouse.move(cx, cy); await page.mouse.down(); await page.mouse.move(cx, cy + 120, { steps: 6 }); await page.mouse.up();
+  const after = await page.evaluate(() => ({ ...window.__ed.crop }));
+  assert.ok(Math.abs(after.y + after.h - (r.b.y + r.b.h)) < 1e-6, `box bottom stops at the image bottom: ${JSON.stringify(after)} vs ${JSON.stringify(r.b)}`);
+  const applied = await page.evaluate(() => { const ed = window.__ed; ed.applyCrop(); const o = ed.fc.getObjects()[0]; return { cropX: o.cropX, cropY: o.cropY, w: o.width, h: o.height }; });
+  for (const k of ['cropX', 'cropY', 'w', 'h']) assert.ok(Number.isInteger(applied[k]), `${k} is whole: ${applied[k]}`);
+  assert.ok(applied.cropY + applied.h <= 1280, 'window stays inside the source');
 });
 
 /* The eraser on a selected vector shape paints into a vector-layer mask: the shape stays an
@@ -2960,4 +3443,1179 @@ test('browser: Open image starts a new document (old layers go; one undo brings 
   assert.deepEqual(await page.evaluate(() => [window.__ed.fc.getObjects().length, !!window.__ed._byId('OLD'), window.__ed.W]), [1, false, 200]);
   await page.evaluate(() => window.__ed.undo()); await page.waitForTimeout(300);
   assert.ok(await page.evaluate(() => !!window.__ed._byId('OLD')));
+});
+
+/* ── voice control: fake SpeechRecognition feeds transcripts into the real editor ── */
+test('voice: spoken commands drive the editor', async () => {
+  await page.evaluate(async () => {
+    window.SpeechRecognition = class { start() { window.__rec = this; } stop() { this.onend && this.onend(); } };
+    const { installVoice } = await import('/packages/core/src/index.js');
+    window.__zoomed = 0; window.__status = [];
+    window.__voice = installVoice(window.__ed, { actions: { zoomIn: () => window.__zoomed++ }, onStatus: (s) => window.__status.push(s) });
+    window.__voice.start();
+    window.__say = (t) => window.__rec.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: t }], { isFinal: true })] });
+  });
+  assert.equal(await page.evaluate(() => window.__voice.listening), true);
+  const say = (t) => page.evaluate((t) => window.__say(t), t);
+
+  await say('use the brush tool');
+  assert.equal(await page.evaluate(() => window.__ed.tool), 'brush');
+
+  await say('add text saying hello');
+  const layer = await page.evaluate(() => window.__ed.layers().find(l => l.active));
+  assert.ok(layer && layer.name.startsWith('hello'));
+
+  await say('make it red');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().fill), '#e53935');
+  await say('opacity 50 percent');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().opacity), 0.5);
+
+  await say('undo');   // reverts opacity only (undo reloads the doc, which drops the selection)
+  assert.equal(await page.evaluate(() => window.__ed.layers().find(l => l.name.startsWith('hello')).opacity), 1);
+  await page.evaluate(() => window.__ed.activate(window.__ed.layers().find(l => l.name.startsWith('hello')).id));
+
+  await say('zoom in');
+  assert.equal(await page.evaluate(() => window.__zoomed), 1);
+
+  await say('delete');
+  assert.equal(await page.evaluate(() => window.__ed.layers().some(l => l.name.startsWith('hello'))), false);
+
+  // failure paths report instead of throwing
+  await say('make it banana');
+  await say('flip horizontally');   // nothing selected
+  const last = await page.evaluate(() => window.__status.slice(-1)[0]);
+  assert.equal(last.state, 'error');
+  assert.match(last.message, /Select a layer/);
+
+  await page.evaluate(() => window.__voice.stop());
+  assert.equal(await page.evaluate(() => window.__voice.listening), false);
+});
+
+test('browser: selectObjectByName — provider box is refined by GrabCut to the object, and the error paths are clean', async () => {
+  await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 400; c.height = 300; const x = c.getContext('2d');
+    x.fillStyle = '#ece6c6'; x.fillRect(0, 0, 400, 300);
+    x.fillStyle = '#2f7fc9'; x.fillRect(220, 170, 80, 90);    // "the blue box"
+    await window.__ed.openImage(c.toDataURL('image/png'));
+  });
+  const none = await page.evaluate(() => window.__ed.selectObjectByName('blue box'));
+  assert.equal(none.reason, 'no_provider');
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed;
+    // loose box (% of the artboard) around the blue rect — x 205..315, y 155..275 of 400x300
+    ed.ai.register({ hasKey: () => true, locateObject: async (_img, d) => (d === 'ghost' ? null : { x: 205 / 4, y: 155 / 3, width: 110 / 4, height: 120 / 3 }) });
+    const ok = await ed.selectObjectByName('blue box');
+    const s = ed.selection, pts = s.kind === 'multipoly' ? s.polys.flat() : (s.pts || []);
+    const bb = pts.length ? [Math.min(...pts.map(p => p.x)), Math.min(...pts.map(p => p.y)), Math.max(...pts.map(p => p.x)), Math.max(...pts.map(p => p.y))].map(Math.round) : null;
+    const ghost = await ed.selectObjectByName('ghost');
+    return { status: ok.status, kind: s.kind, bb, ghost: ghost.reason };
+  });
+  assert.equal(r.status, 'ok');
+  assert.notEqual(r.kind, 'rect', 'refined past the loose box');
+  assert.ok(r.bb.every((v, i) => Math.abs(v - [220, 170, 300, 260][i]) <= 6), 'hugs the object: ' + r.bb);
+  assert.equal(r.ghost, 'no_match');
+});
+
+test('browser: voice catalog drives the real editor — adjustments, text, style, layout, canvas, masks, chains', async () => {
+  const r = await page.evaluate(async () => {
+    const { parseVoiceCommands, runVoiceCommand } = await import('/packages/core/src/index.js');
+    const ed = window.__ed;
+    const actions = { zoomIn() { window.__z = 'in'; }, export(f) { window.__exp = f; }, theme(m) { window.__theme = m; } };
+    const log = [];
+    const say = async (phrase) => {
+      const cmds = parseVoiceCommands(phrase);
+      if (!cmds) { log.push([phrase, 'NO PARSE']); return null; }
+      try { for (const c of cmds) log.push([phrase, await runVoiceCommand(ed, c, actions)]); }
+      catch (e) { log.push([phrase, 'ERR ' + e.message]); }
+    };
+    const c = document.createElement('canvas'); c.width = 400; c.height = 300; const x = c.getContext('2d');
+    x.fillStyle = '#ece6c6'; x.fillRect(0, 0, 400, 300); x.fillStyle = '#2f7fc9'; x.fillRect(220, 170, 80, 90);
+    await ed.openImage(c.toDataURL('image/png'));
+    const o = {};
+    // photo adjustments with nothing selected (auto-targets the picture)
+    ed.fc.discardActiveObject();
+    await say('increase brightness'); o.bright = ed.getImageFilters().brightness;
+    await say('contrast 130'); o.contrast = ed.getImageFilters().contrast;
+    await say('make it warmer'); o.temp = ed.getImageFilters().temperature;
+    await say('black and white'); o.sat = ed.getImageFilters().saturate;
+    await say('reset adjustments'); o.reset = [ed.getImageFilters().brightness, ed.getImageFilters().saturate];
+    await say('straighten 3 degrees'); o.geo = ed.getImageGeometry().angle;
+    // shapes + style
+    await say('add a circle'); o.circle = ed.fc.getActiveObject().type;
+    await say('make it light blue'); o.fill = ed.fc.getActiveObject().fill;
+    await say('border it red'); o.stroke = ed.fc.getActiveObject().stroke;
+    await say('border width 6'); o.sw = ed.fc.getActiveObject().strokeWidth;
+    await say('add shadow'); o.shadow = !!ed.fc.getActiveObject().shadow;
+    await say('remove shadow'); o.noShadow = !ed.fc.getActiveObject().shadow;
+    await say('opacity 40 percent'); o.op = ed.fc.getActiveObject().opacity;
+    await say('rotate 90 degrees'); o.angle = ed.fc.getActiveObject().angle;
+    await say('move it left 50'); const l0 = ed.fc.getActiveObject().left; await say('move it right 50'); o.nudged = ed.fc.getActiveObject().left - l0;
+    await say('scale 200 percent'); o.scaledW = Math.round(ed.fc.getActiveObject().getScaledWidth());
+    await say('align left'); o.alignL = Math.round(ed.fc.getActiveObject().getBoundingRect(true).left);
+    await say('lock'); o.locked = ed.layers().find(l => l.id === ed.fc.getActiveObject().id)?.locked;
+    await say('unlock');
+    await say('rename layer to hero dot'); o.name = ed.layers().find(l => l.active)?.name;
+    await say('add mask'); o.mask = !!ed.fc.getActiveObject().maskCanvas || !!ed.fc.getActiveObject().filters?.length || 'ok';
+    await say('invert mask');
+    await say('remove mask');
+    // text
+    await say('add text saying hello world'); const t = ed.fc.getActiveObject(); o.text = t.text;
+    await say('font size 64'); o.fs = ed.fc.getActiveObject().fontSize;
+    await say('bold'); o.bold = ed.fc.getActiveObject().fontWeight;
+    await say('italic'); o.italic = ed.fc.getActiveObject().fontStyle;
+    await say('underline'); o.ul = ed.fc.getActiveObject().underline;
+    await say('text center'); o.align = ed.fc.getActiveObject().textAlign;
+    await say('font roboto'); o.font = ed.fc.getActiveObject().fontFamily;
+    await say('line height 1.5'); o.lh = ed.fc.getActiveObject().lineHeight;
+    await say('change the text to sale today'); o.text2 = ed.fc.getActiveObject().text;
+    // canvas
+    await say('canvas 16 to 9'); o.canvas = [ed.W, ed.H];
+    await say('canvas size 500 by 400'); o.canvas2 = [ed.W, ed.H];
+    await say('background white');
+    await say('add a heart'); o.sticker = ed.fc.getObjects().length;
+    // tools + brush
+    await say('brush'); o.tool = ed.tool;
+    await say('brush size 40'); o.size = ed.toolOpts.size;
+    await say('brush color red'); o.bcolor = ed.toolOpts.color;
+    await say('brush opacity 50'); o.bop = ed.toolOpts.opacity;
+    await say('tolerance 80'); o.tol = ed.toolOpts.tolerance;
+    await say('snapping off');
+    // selection ops
+    await say('select all layers'); await say('select all'); await say('copy'); await say('paste'); await say('deselect');
+    // chains + shell actions
+    await say('zoom in and undo'); o.zoom = window.__z;
+    await say('export as jpg'); o.exp = window.__exp;
+    await say('dark mode'); o.theme = window.__theme;
+    o.log = log.filter(([, m]) => /^(ERR|NO PARSE)/.test(m));
+    return o;
+  });
+  assert.deepEqual(r.log, [], 'every phrase ran: ' + JSON.stringify(r.log));
+  assert.equal(r.bright, 115); assert.equal(r.contrast, 130); assert.equal(r.temp, 30); assert.equal(r.sat, 0);
+  assert.deepEqual(r.reset, [100, 100]); assert.equal(r.geo, 3);
+  assert.equal(r.circle, 'ellipse'); assert.equal(r.stroke, '#e53935'); assert.equal(r.sw, 6);
+  assert.equal(r.shadow, true); assert.equal(r.noShadow, true); assert.equal(r.op, 0.4); assert.equal(r.angle, 90);
+  assert.equal(r.nudged, 50); assert.ok(r.scaledW > 0); assert.equal(r.alignL, 0); assert.equal(r.locked, true);
+  assert.equal(r.text, 'hello world'); assert.equal(r.fs, 64); assert.equal(r.bold, 'bold'); assert.equal(r.italic, 'italic');
+  assert.equal(r.ul, true); assert.equal(r.align, 'center'); assert.match(r.font, /Roboto/); assert.equal(r.lh, 1.5); assert.equal(r.text2, 'sale today');
+  assert.deepEqual(r.canvas2, [500, 400]); assert.equal(r.tool, 'brush'); assert.equal(r.size, 40); assert.equal(r.bcolor, '#e53935'); assert.equal(r.bop, 0.5); assert.equal(r.tol, 80);
+  assert.equal(r.zoom, 'in'); assert.equal(r.exp, 'jpg'); assert.equal(r.theme, 'dark');
+});
+
+test('browser: voice — shape colour/size, gradient angle, border style/position, explicit size, move, distribute', async () => {
+  const r = await page.evaluate(async () => {
+    const { parseVoiceCommands, runVoiceCommand } = await import('/packages/core/src/index.js');
+    const ed = window.__ed, A = () => ed.fc.getActiveObject();
+    const say = async (p) => { for (const c of parseVoiceCommands(p) || (() => { throw new Error('NO PARSE: ' + p); })()) await runVoiceCommand(ed, c, {}); };
+    const o = {};
+    await say('add a red circle'); o.circle = [A().type, A().fill];
+    await say('draw a big blue square'); o.big = Math.round(A().getScaledWidth());
+    await say('add a 200 pixel star'); o.star = Math.round(A().getBoundingRect(true).width);
+    await say('add a rectangle');
+    await say('vertical gradient from white to black'); o.vert = A().fill.coords;
+    await say('dashed border'); o.dash = A().strokeDashArray;
+    await say('border inside'); o.pos = A().strokePosition;
+    await say('make it 300 wide'); o.w = Math.round(A().getScaledWidth());
+    await say('move to 100 200'); o.at = [Math.round(A().left), Math.round(A().top)];
+    // distribute: three 50px circles at uneven x
+    ed.fc.getObjects().slice().forEach(x => ed.fc.remove(x));
+    for (const x of [20, 70, 250]) { await say('add a 50 pixel circle'); await say('move to ' + x + ' 100'); }
+    await say('select all layers'); await say('distribute horizontally');
+    ed.fc.discardActiveObject();
+    o.xs = ed.fc.getObjects().map(m => Math.round(m.getBoundingRect(true).left)).sort((a, b) => a - b);
+    return o;
+  });
+  assert.deepEqual(r.circle, ['ellipse', '#e53935']);
+  assert.ok(r.big > 100 && r.star === 200 || Math.abs(r.star - 200) <= 12, 'sizes: ' + JSON.stringify(r));
+  assert.ok(r.vert.y2 > 0 && r.vert.x1 === r.vert.x2, 'vertical gradient axis: ' + JSON.stringify(r.vert));
+  assert.ok(Array.isArray(r.dash)); assert.equal(r.pos, 'inside'); assert.equal(r.w, 300); assert.deepEqual(r.at, [100, 200]);
+  assert.equal(r.xs.length, 3);
+  assert.deepEqual(r.xs, [20, 135, 250], 'evenly spaced between the outer two: ' + r.xs);
+});
+
+test('browser: voice — layer picking, blend, curves, HSL, perspective, adjustment layers, toggles, crop ratio, fills', async () => {
+  const r = await page.evaluate(async () => {
+    const { parseVoiceCommands, runVoiceCommand } = await import('/packages/core/src/index.js');
+    const ed = window.__ed, A = () => ed.fc.getActiveObject();
+    const errs = [];
+    const say = async (p) => { const c = parseVoiceCommands(p); if (!c) { errs.push(['NO PARSE', p]); return; } try { for (const x of c) await runVoiceCommand(ed, x, { reviewCommit() { window.__rc = 1; }, saveProject() { window.__sp = 1; } }); } catch (e) { errs.push([p, e.message]); } };
+    const c = document.createElement('canvas'); c.width = 400; c.height = 300; const x = c.getContext('2d');
+    x.fillStyle = '#ece6c6'; x.fillRect(0, 0, 400, 300); x.fillStyle = '#2f7fc9'; x.fillRect(220, 170, 80, 90);
+    await ed.openImage(c.toDataURL('image/png'));
+    const o = {};
+    await say('add a red circle'); await say('add text saying hello'); await say('add a blue square');
+    await say('select the text layer'); o.textSel = A().type;
+    await say('select layer 1'); o.top = A().id === ed.layers()[0].id;
+    await say('select the background'); o.bg = ed.layers().find(l => l.active)?.role;
+    await say('select the next layer');
+    await say('select layer 3');
+    await say('blend mode multiply'); o.blend = A().globalCompositeOperation;
+    await say('select the background');
+    await say('contrast curve'); o.curve = !!(A().fx && A().fx.curves && A().fx.curves.rgb);
+    await say('reset curves'); o.curveReset = !(A().fx && A().fx.curves);
+    await say('reds saturation 30'); o.hsl = A().fx.hsl && A().fx.hsl.red && A().fx.hsl.red.s;
+    await say('make the blues darker'); o.hslB = A().fx.hsl.blue.l;
+    await say('increase tolerance'); o.tol = ed.toolOpts.tolerance;
+    await say('perspective correction'); o.persp = !!ed._persp; await say('cancel perspective'); o.perspOff = !ed._persp;
+    await say('add adjustment layer'); o.adjRole = A().role;
+    await say('increase brightness'); o.adjBright = ed.getAdjustmentParams(A().id).brightness;
+    await say('add mode on'); o.addMode = ed.toolOpts.addMode;
+    await say('paint on a new layer'); o.pnl = ed.toolOpts.paintNewLayer;
+    await say('aligned off'); o.aligned = ed.toolOpts.aligned;
+    await say('gradient tool from red to blue'); o.gt = [ed.tool, ed.toolOpts.gradientStops[0].color, ed.toolOpts.gradientStops[1].color];
+    await say('gradient type radial'); o.gk = ed.toolOpts.gradientType;
+    await say('crop 16 to 9'); o.crop = [ed.tool, +ed.toolOpts.cropRatio.toFixed(3)];
+    await say('crop original'); o.cropO = +ed.toolOpts.cropRatio.toFixed(3);
+    await say('select the background');
+    await say('select all'); await say('fill the selection with red'); await say('deselect');
+    await say('cover the canvas');
+    await say('create layers'); o.rc = window.__rc;
+    await say('save project'); o.sp = window.__sp;
+    o.errs = errs;
+    return o;
+  });
+  assert.deepEqual(r.errs, [], JSON.stringify(r.errs));
+  assert.equal(r.textSel, 'i-text'); assert.equal(r.top, true); assert.equal(r.blend, 'multiply');
+  assert.equal(r.curve, true); assert.equal(r.curveReset, true); assert.equal(r.hsl, 30); assert.equal(r.hslB, -30);
+  assert.equal(r.tol, 80); assert.equal(r.persp, true); assert.equal(r.perspOff, true);
+  assert.equal(r.adjRole, 'adjustment'); assert.equal(r.adjBright, 115);
+  assert.equal(r.addMode, true); assert.equal(r.pnl, true); assert.equal(r.aligned, false);
+  assert.deepEqual(r.gt, ['gradient', '#e53935', '#1e88e5']); assert.equal(r.gk, 'radial');
+  assert.deepEqual(r.crop, ['crop', 1.778]); assert.equal(r.cropO, +(400 / 300).toFixed(3));
+  assert.equal(r.rc, 1); assert.equal(r.sp, 1);
+});
+
+test('browser: voice — pen tool draws points/shapes/paths, and offline background removal', async () => {
+  const r = await page.evaluate(async () => {
+    const { parseVoiceCommands, runVoiceCommand } = await import('/packages/core/src/index.js');
+    const ed = window.__ed, A = () => ed.fc.getActiveObject();
+    const errs = [];
+    const say = async (p) => { const c = parseVoiceCommands(p); if (!c) { errs.push(['NO PARSE', p]); return null; } let m; try { for (const x of c) m = await runVoiceCommand(ed, x, {}); } catch (e) { errs.push([p, e.message]); } return m; };
+    const o = {};
+    // — pen, point by point —
+    await say('pen tool'); o.tool = ed.tool;
+    await say('pen point at 50 50'); await say('pen point at 200 60'); await say('add a curved point at 250 200');
+    o.building = ed._penBuild.nodes.length; o.curved = !!ed._penBuild.nodes[2].ho;
+    await say('next point 40 left and 30 down'); o.rel = [Math.round(ed._penBuild.nodes[3].x), Math.round(ed._penBuild.nodes[3].y)];
+    await say('undo last point'); o.afterUndo = ed._penBuild.nodes.length;
+    await say('close the path'); const closed = A(); o.closed = [closed.type, !!closed.fill, ed._penBuild];
+    // open path via 'finish'
+    await say('add a point at the top left'); await say('add a point at the bottom right'); await say('finish'); o.open = [A().type, !!A().stroke, !A().fill];
+    // — whole shapes and custom paths —
+    await say('draw a heart path'); o.heart = [A().type, A().shapeKind, Math.round(A().getScaledWidth())];
+    await say('draw a big red pen star'); o.star = [A().fill, Math.round(A().getBoundingRect(true).width)];
+    await say('draw a path through 20 20, 120 20, 70 120 and close it'); o.custom = [A().type, !!A().fill];
+    await say('edit path'); o.editing = !!ed.pathEdit; await say('smooth points'); await say('done editing path'); o.editDone = !ed.pathEdit;
+    await say('pen width 8'); o.pw = ed.toolOpts.penStrokeWidth;
+    // — offline background removal —
+    ed.fc.getObjects().slice().forEach(x => ed.fc.remove(x));
+    const c = document.createElement('canvas'); c.width = 400; c.height = 300; const x = c.getContext('2d');
+    x.fillStyle = '#ece6c6'; x.fillRect(0, 0, 400, 300); x.fillStyle = '#2f7fc9'; x.fillRect(140, 90, 120, 120);
+    await ed.openImage(c.toDataURL('image/png'));
+    const msg = await say('remove background offline'); o.msg = msg;
+    const img = ed.fc.getObjects().find(q => q.type === 'image');
+    o.masked = !!(img && (img.maskCanvas || img.cutout));
+    // sample the layer's own pixels: corner should be transparent, centre opaque
+    const flat = ed.exportPNG(); const im = new Image(); im.src = flat; await im.decode();
+    const k = document.createElement('canvas'); k.width = im.width; k.height = im.height; const cx = k.getContext('2d'); cx.drawImage(im, 0, 0);
+    const px = (X, Y) => Array.from(cx.getImageData(Math.round(X * im.width / ed.W), Math.round(Y * im.height / ed.H), 1, 1).data);   // exportPNG flattens onto the page colour
+    o.alpha = [px(10, 10), px(200, 150)];
+    await say('touch up keep'); o.touch = ed.toolOpts.maskRefine; await say('touch up off');
+    o.errs = errs; return o;
+  });
+  assert.deepEqual(r.errs, [], JSON.stringify(r.errs));
+  assert.equal(r.tool, 'pen'); assert.equal(r.building, 3); assert.equal(r.curved, true);
+  assert.deepEqual(r.rel, [210, 230]); assert.equal(r.afterUndo, 3);
+  assert.equal(r.closed[0], 'path'); assert.equal(r.closed[1], true); assert.equal(r.closed[2], null);
+  assert.deepEqual(r.open, ['path', true, true]);
+  assert.equal(r.heart[0], 'path'); assert.equal(r.heart[1], 'pen'); assert.ok(r.heart[2] > 100);
+  assert.equal(r.star[0], '#e53935'); assert.ok(r.star[1] > 150, 'big star: ' + r.star);
+  assert.deepEqual(r.custom, ['path', true]); assert.equal(r.editing, true); assert.equal(r.editDone, true); assert.equal(r.pw, 8);
+  assert.match(r.msg, /offline/); assert.ok(!(Math.abs(r.alpha[0][0] - 236) < 8 && Math.abs(r.alpha[0][2] - 198) < 8), 'cream backdrop is gone: ' + r.alpha[0]); assert.ok(r.alpha[1][2] > 150 && r.alpha[1][0] < 90, 'blue subject stays: ' + r.alpha[1]);
+  assert.equal(r.touch, 'keep');
+});
+
+test('browser: voice — selecting several layers at once (numbers, ranges, names, roles, add, remove)', async () => {
+  const r = await page.evaluate(async () => {
+    const { parseVoiceCommands, runVoiceCommand } = await import('/packages/core/src/index.js');
+    const ed = window.__ed, errs = [];
+    const say = async (p) => { const c = parseVoiceCommands(p); if (!c) { errs.push(['NO PARSE', p]); return null; } let m; try { for (const x of c) m = await runVoiceCommand(ed, x, {}); } catch (e) { errs.push([p, e.message]); } return m; };
+    const sel = () => { const o = ed.fc.getActiveObject(); return !o ? [] : (o.type === 'activeSelection' ? o.getObjects() : [o]).map(x => x.type); };
+    const names = () => ed.layers().map(l => l.name);
+    // layers top→bottom after these adds: 1 star(polygon) 2 text 3 circle 4 square
+    await say('add a blue square'); await say('add a red circle'); await say('add text saying hi'); await say('add a star');
+    const o = {};
+    o.n1 = [await say('select layers 1 and 3'), sel().length];
+    o.range = [await say('select layers 1 to 3'), sel().length];
+    o.names = [await say('select the text and star layers'), sel().sort()];
+    o.role = [await say('select all text layers'), sel()];
+    await say('select layer 1'); o.add = [await say('add layer 3 to the selection'), sel().length];
+    o.add2 = [await say('also select layer 4'), sel().length];
+    o.remove = [await say('deselect layer 3'), sel().length];
+    // a multi-selection is actionable: group / align / delete act on all
+    await say('select layers 1 and 2'); await say('group'); o.grouped = ed.layers().filter(l => l.isGroup).length;
+    await say('ungroup');
+    await say('select layers 1 and 2'); await say('align left'); o.aligned = sel().length;
+    o.errs = errs; return o;
+  });
+  assert.deepEqual(r.errs, [], JSON.stringify(r.errs));
+  assert.equal(r.n1[1], 2); assert.equal(r.range[1], 3); assert.deepEqual(r.names[1], ['i-text', 'polygon']);
+  assert.deepEqual(r.role[1], ['i-text']);
+  assert.equal(r.add[1], 2); assert.equal(r.add2[1], 3); assert.equal(r.remove[1], 2);
+  assert.equal(r.grouped, 1); assert.equal(r.aligned, 2);
+});
+
+test('browser: voice — "select both the circle", spoken numbers, both/the two/top two all select two circles', async () => {
+  const r = await page.evaluate(async () => {
+    const { parseVoiceCommands, runVoiceCommand } = await import('/packages/core/src/index.js');
+    const ed = window.__ed, A = () => ed.fc.getActiveObject();
+    const say = async (p) => { const c = parseVoiceCommands(p); if (!c) return 'NO PARSE'; try { let m; for (const x of c) m = await runVoiceCommand(ed, x, {}); return m; } catch (e) { return 'ERR ' + e.message; } };
+    const count = () => { const o = A(); return !o ? 0 : o.type === 'activeSelection' ? o.getObjects().length : 1; };
+    for (const x of ed.fc.getObjects().slice()) ed.fc.remove(x);
+    await say('add a black circle'); await say('add a yellow circle');
+    const out = {};
+    // no AI provider is registered here, so none of these may need one
+    for (const p of ['select both the circle', 'select both circles', 'select the circles', 'select the two circles', 'select layer 1 and 2', 'select layer one and two', 'select layers one and two', 'select layers 1, 2', 'select both', 'select the top two layers', 'select first two layers']) {
+      ed.fc.discardActiveObject(); const m = await say(p); out[p] = [count(), /^(ERR|NO PARSE)/.test(m) ? m : 'ok'];
+    }
+    return out;
+  });
+  for (const [p, [n, st]] of Object.entries(r)) { assert.equal(st, 'ok', p + ': ' + st); assert.equal(n, 2, p + ' selected ' + n); }
+});
+
+/* ── voice: shape/text/targeting phrasings land as real layers (no AI involved) ── */
+test('voice: draw/add phrasings create plain shapes, and act on layers by name', async () => {
+  await page.evaluate(async () => {
+    window.SpeechRecognition = class { start() { window.__rec = this; } stop() { this.onend && this.onend(); } };
+    const { installVoice } = await import('/packages/core/src/index.js');
+    window.__status = [];
+    window.__voice = installVoice(window.__ed, { onStatus: (s) => window.__status.push(s) });
+    window.__voice.start();
+    window.__say = (t) => window.__rec.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: t }], { isFinal: true })] });
+  });
+  const say = async (t) => { await page.evaluate((t) => window.__say(t), t); await page.waitForFunction(() => ['done', 'error'].includes(window.__status.slice(-1)[0].state)); };
+  const types = () => page.evaluate(() => window.__ed.layers().map(l => l.name));
+  const n0 = (await types()).length;
+
+  await say('draw the circle');
+  assert.equal((await types()).length, n0 + 1);
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().type), 'ellipse');   // a vector shape, not an image
+
+  await say('draw two stars');
+  assert.equal((await types()).length, n0 + 3);
+
+  await say('draw a red square at the top');
+  const sq = await page.evaluate(() => { const o = window.__ed.fc.getActiveObject(); return { fill: o.fill, y: o.top }; });
+  assert.equal(sq.fill, '#e53935');
+  assert.ok(sq.y < 150, 'top half of the 300px canvas');
+
+  await say('draw a heart');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().type), 'path');
+
+  await say('write hello there');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject().text), 'hello there');
+
+  const before = (await types()).length;
+  await say('delete the circle');
+  assert.equal((await types()).length, before - 1);
+  await say('make the star blue');   // two stars: both get selected, both filled
+  assert.deepEqual(await page.evaluate(() => window.__ed.fc.getObjects().filter(o => o.type === 'polygon' || /star/i.test(o.name || '')).map(o => o.fill)).then(a => [...new Set(a)]), ['#1e88e5']);
+
+  // nothing named like that: a clear error, no AI, no crash
+  await say('delete the triangle');
+  assert.equal(await page.evaluate(() => window.__status.slice(-1)[0].state), 'error');
+  await page.evaluate(() => window.__voice.stop());
+});
+
+/* ── fourth real-user pass (story post): regressions ─────────────────────────────────────── */
+const sceneToScreen = async () => {
+  const box = await page.locator('#cv').boundingBox();
+  const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+  return (x, y) => [box.x + vt[4] + x * vt[0], box.y + vt[5] + y * vt[3]];
+};
+const pixelSum = (id, x, y) => page.evaluate(([id, x, y]) => {
+  const o = window.__ed._byId(id), el = o._originalElement || o._element;
+  const c = document.createElement('canvas'); c.width = el.width; c.height = el.height;
+  const g = c.getContext('2d'); g.drawImage(el, 0, 0);
+  const d = g.getImageData(x, y, 1, 1).data; return [d[0], d[1], d[2], d[3]];
+}, [id, x, y]);
+
+test('browser: ⌘C then ⌘V with a lasso/marquee selection pastes those pixels as a new layer, in place', async () => {
+  // Regression: closing a lasso leaves no active object, and ⌘C/⌘V only knew whole objects — nothing happened.
+  const id = await addTestImage("ctx.fillStyle='#2c7be5';ctx.fillRect(0,0,w,h)", 120, 80);
+  await page.evaluate((id) => { const ed = window.__ed, o = ed._byId(id); o.set({ left: 20, top: 20, scaleX: 1, scaleY: 1 }); o.setCoords(); ed.setTool('marquee'); ed.selection = { kind: 'rect', x: 40, y: 30, w: 30, h: 20 }; }, id);
+  assert.equal(await page.evaluate(() => !!window.__ed.fc.getActiveObject()), false);
+  await page.keyboard.press('ControlOrMeta+c');
+  await page.keyboard.press('ControlOrMeta+v');
+  await page.waitForFunction(() => window.__ed.fc.getObjects().length === 2);
+  const r = await page.evaluate(() => { const ed = window.__ed, o = ed.fc.getObjects()[1]; return { l: Math.round(o.left), t: Math.round(o.top), w: Math.round(o.getScaledWidth()), h: Math.round(o.getScaledHeight()), sel: !!ed.selection, active: ed.fc.getActiveObject() === o }; });
+  assert.deepEqual(r, { l: 40, t: 30, w: 30, h: 20, sel: false, active: true });
+});
+
+test('browser: corner-dragging a photo, a text or a sticker keeps its proportions; a plain shape scales freely', async () => {
+  // Regression: corners scaled freely for everything (Figma's shape rule), so a quick resize squashed photos and stickers.
+  const at = await sceneToScreen();
+  const drag = async (id) => {
+    const br = await page.evaluate((id) => { const ed = window.__ed, o = ed._byId(id); ed.setTool('select'); ed.fc.setActiveObject(o); o.setCoords(); ed.fc.renderAll(); return o.aCoords.br; }, id);
+    await page.mouse.move(...at(br.x, br.y)); await page.mouse.down(); await page.mouse.move(...at(br.x + 40, br.y + 7), { steps: 6 }); await page.mouse.up();
+    return page.evaluate((id) => { const o = window.__ed._byId(id); return Math.abs(o.scaleX - o.scaleY) < 1e-9; }, id);
+  };
+  const img = await addTestImage("ctx.fillStyle='#c33';ctx.fillRect(0,0,w,h)", 80, 60);
+  await page.evaluate((id) => { const o = window.__ed._byId(id); o.set({ left: 40, top: 40, scaleX: 1, scaleY: 1 }); o.setCoords(); }, img);
+  assert.equal(await drag(img), true, 'photo');
+  const sticker = await page.evaluate(() => { const ed = window.__ed; return ed.addSticker('burstText', { x: 250, y: 150 }, 100); });
+  assert.equal(await drag(sticker), true, 'sticker');
+  const rect = await page.evaluate(() => { const ed = window.__ed, o = new window.fabric.Rect({ left: 220, top: 40, width: 60, height: 40, fill: '#333' }); o.id = 'r1'; ed.fc.add(o); return 'r1'; });
+  assert.equal(await drag(rect), false, 'a plain rectangle stays free (Shift locks it)');
+});
+
+test('browser: the eraser erases a flipped or rotated photo itself, at the spot under the brush', async () => {
+  // Regression: any flip/rotation made the retouch tools give up and paint an empty new "Paint" layer.
+  const id = await addTestImage("ctx.fillStyle='#2c7be5';ctx.fillRect(0,0,w,h)", 100, 60);
+  await page.evaluate((id) => { const ed = window.__ed, o = ed._byId(id); o.set({ left: 100, top: 100, scaleX: 1, scaleY: 1, flipX: true }); o.setCoords(); ed.fc.setActiveObject(o); ed.setTool('eraser'); ed.setToolOptions({ size: 16, hardness: 1, opacity: 1 }); }, id);
+  const at = await sceneToScreen();
+  await page.mouse.move(...at(110, 130)); await page.mouse.down(); await page.mouse.up();   // near the layer's LEFT edge on screen
+  await page.waitForTimeout(50);
+  assert.equal(await page.evaluate(() => window.__ed.fc.getObjects().length), 1, 'no stray paint layer');
+  // mirrored: screen-left is the source's right edge
+  assert.equal((await pixelSum(id, 90, 30))[3], 0, 'erased where the brush was');
+  assert.equal((await pixelSum(id, 10, 30))[3], 255, 'the other side untouched');
+});
+
+test('browser: retouching a photo that has adjustments does not apply them twice', async () => {
+  // Regression: the paint tools copied the FILTERED render and handed it back as the source — Fabric
+  // re-applied the filters on top, so a dodge stroke brightened the whole photo, not just the stroke.
+  const id = await addTestImage("ctx.fillStyle='#406040';ctx.fillRect(0,0,w,h)", 100, 60);
+  await page.evaluate((id) => { const ed = window.__ed, o = ed._byId(id); o.set({ left: 50, top: 50, scaleX: 1, scaleY: 1 }); o.setCoords(); ed.fc.setActiveObject(o); ed.setImageFilters({ brightness: 130 }); }, id);
+  const far0 = await pixelSum(id, 90, 50);
+  await page.evaluate(() => { const ed = window.__ed; ed.setTool('dodge'); ed.setToolOptions({ size: 10, opacity: 1 }); });
+  const at = await sceneToScreen();
+  await page.mouse.move(...at(60, 60)); await page.mouse.down(); await page.mouse.up();
+  await page.waitForTimeout(50);
+  assert.deepEqual(await pixelSum(id, 90, 50), far0, 'the source away from the stroke is unchanged');
+});
+
+test('browser: Shift-click picks a range of layers, Cmd-click one; locked and adjustment layers stay out', async () => {
+  const ids = await page.evaluate(() => {
+    const ed = window.__ed, F = window.fabric, out = [];
+    for (let i = 0; i < 4; i++) { const o = new F.Rect({ left: 20 + i * 60, top: 20, width: 40, height: 40, fill: '#555' }); o.id = 'L' + i; ed.fc.add(o); out.push(o.id); }
+    ed._byId('L2').locked = true;
+    return out;
+  });
+  await page.evaluate(() => { window.__ed.activate('L0'); window.__ed.selectLayerRange('L3'); });
+  assert.deepEqual(await page.evaluate(() => window.__ed.fc.getActiveObject().getObjects().map(o => o.id)), ['L0', 'L1', 'L3']);
+  await page.evaluate(() => window.__ed.toggleLayerSelection('L1'));
+  assert.deepEqual(await page.evaluate(() => window.__ed.fc.getActiveObject().getObjects().map(o => o.id)), ['L0', 'L3']);
+  assert.equal(ids.length, 4);
+});
+
+test('browser: a flipped layer moved inside a multi-selection is still flipped, not turned 180°', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, F = window.fabric;
+    const a = new F.Rect({ left: 20, top: 20, width: 60, height: 40, fill: '#a33', flipX: true }); a.id = 'fa';
+    const b = new F.Rect({ left: 200, top: 20, width: 60, height: 40, fill: '#33a' }); b.id = 'fb';
+    ed.fc.add(a, b);
+    const sel = new F.ActiveSelection([a, b], { canvas: ed.fc }); ed.fc.setActiveObject(sel);
+    sel.set({ left: sel.left + 15, top: sel.top + 10 }); sel.setCoords();
+    ed.fc.discardActiveObject();
+    return { angle: a.angle, flipX: a.flipX, flipY: a.flipY, left: Math.round(a.left), top: Math.round(a.top) };
+  });
+  assert.deepEqual(r, { angle: 0, flipX: true, flipY: false, left: 35, top: 30 });
+});
+
+test('browser: the Rotation field turns a layer about its centre', async () => {
+  const c = await page.evaluate(() => {
+    const ed = window.__ed, o = new window.fabric.Rect({ left: 100, top: 80, width: 80, height: 40, fill: '#555' }); o.id = 'rot'; ed.fc.add(o); ed.fc.setActiveObject(o);
+    const c0 = o.getCenterPoint(); ed.setNumeric({ angle: 180 }); const c1 = o.getCenterPoint(); ed.setNumeric({ angle: 0 }); const c2 = o.getCenterPoint();
+    return [c0, c1, c2].map(p => [Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10]);
+  });
+  assert.deepEqual(c[1], c[0], 'turning to 180° keeps the centre');
+  assert.deepEqual(c[2], c[0], 'and back to 0°');
+});
+
+test('browser: a locked layer stays locked (not draggable) after undo restores the document', async () => {
+  // Regression: selectable/evented/lockMovement aren't serialized — after a reload or undo a locked
+  // background could be dragged, and Shift-click pulled it into a multi-selection.
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, o = new window.fabric.Rect({ left: 0, top: 0, width: 400, height: 300, fill: '#246' }); o.id = 'bgr'; ed.fc.add(o); ed.commit('add');
+    ed.setLayer('bgr', { locked: true });
+    const t = new window.fabric.Rect({ left: 10, top: 10, width: 20, height: 20, fill: '#fff' }); t.id = 'x'; ed.fc.add(t); ed.commit('add');
+    ed.undo(); await new Promise(r => setTimeout(r, 300));
+    const b = ed._byId('bgr'); return { locked: b.locked, selectable: b.selectable, evented: b.evented, lockMovementX: b.lockMovementX };
+  });
+  assert.deepEqual(r, { locked: true, selectable: false, evented: false, lockMovementX: true });
+});
+
+test('browser: an adjustment layer lets clicks through, stays pinned to the artboard, and is never a paint target', async () => {
+  const at = await sceneToScreen();
+  await page.evaluate(() => { const ed = window.__ed, o = new window.fabric.Rect({ left: 150, top: 100, width: 80, height: 60, fill: '#c33' }); o.id = 'under'; ed.fc.add(o); ed.commit('add'); ed.addAdjustmentLayer(); ed.fc.discardActiveObject(); ed.setTool('select'); });
+  await page.mouse.click(...at(190, 130));
+  assert.equal(await page.evaluate(() => window.__ed.fc.getActiveObject() && window.__ed.fc.getActiveObject().id), 'under', 'the click reaches the layer under the adjustment');
+  const adjId = await page.evaluate(() => window.__ed.fc.getObjects().find(o => o.role === 'adjustment').id);
+  await page.evaluate((id) => window.__ed.activate(id), adjId);
+  await page.keyboard.press('Shift+ArrowUp');
+  await page.evaluate(() => window.__ed.commit('x'));
+  assert.deepEqual(await page.evaluate((id) => { const o = window.__ed._byId(id); return [o.left, o.top]; }, adjId), [0, 0], 'arrow keys cannot shift it off the artboard');
+  assert.notEqual(await page.evaluate(() => { const t = window.__ed._paintTargetLayer(); return t && t.role; }), 'adjustment');
+});
+
+test('browser: flattening (adjustment layers, clone/heal sampling) never bakes in the selection handles', async () => {
+  // Regression: renderObjectsFlat rendered interactively, so the active layer's handles landed in the
+  // adjustment layer's pixels — and in the exported image.
+  const px = await page.evaluate(() => {
+    const ed = window.__ed, o = new window.fabric.Rect({ left: 0, top: 0, width: 400, height: 300, fill: '#102030' }); o.id = 'bgx'; ed.fc.add(o); ed.commit('add');
+    ed.addAdjustmentLayer({ contrast: 120 });
+    const adj = ed.fc.getObjects().find(q => q.role === 'adjustment');
+    ed.fc.setActiveObject(o); ed.fc.renderAll();   // the page-sized layer is selected: a handle sits at its top-middle
+    ed._recomputeAdjustmentLayers();
+    const c = adj._element.getContext('2d');
+    const d = c.getImageData(195, 2, 10, 5).data; let mx = 0;   /* rows 2-6: inside a handle, past the half-covered top row */ for (let i = 0; i < d.length; i += 4) mx = Math.max(mx, d[i] + d[i + 1] + d[i + 2]);
+    return mx;
+  });
+  assert.ok(px < 200, 'no white handle at the top-middle edge: ' + px);
+});
+
+test('browser: the eyedropper picked with a CTA selected recolours the CTA', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, F = window.fabric;
+    const sw = new F.Rect({ left: 0, top: 0, width: 60, height: 60, fill: '#ff4300' }); sw.id = 'sw'; ed.fc.add(sw);
+    ed.addCTA(null, { text: 'Shop now' }); const cta = ed.fc.getActiveObject();
+    ed.setTool('eyedropper');
+    return cta.id;
+  });
+  const at = await sceneToScreen();
+  await page.mouse.click(...at(20, 20));
+  assert.deepEqual(await page.evaluate((id) => { const o = window.__ed.fc.getActiveObject(); return [o.id, (o.fill || '').toLowerCase()]; }, r), [r, '#ff4300']);
+});
+
+/* ── fifth pass (panels): regressions ─────────────────────────────────────────────────────── */
+test('browser: panel X/Y are the top-left corner for any origin — a sticker set to X 70 has its left edge at 70', async () => {
+  // Regression: X/Y wrote raw left/top, which for a centre-origin sticker is its CENTRE (half off the page).
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, id = ed.addSticker('burstText', { x: 200, y: 150 }, 100), o = ed._byId(id);
+    const shown = ed.panelPosition(o);
+    ed.setNumeric({ x: 70, y: 40 });
+    const b = o.getBoundingRect(true);
+    return { shownIsCorner: Math.round(shown.x) === Math.round(200 - o.getScaledWidth() / 2), left: Math.round(b.left), top: Math.round(b.top), after: ed.panelPosition(o) };
+  });
+  assert.equal(r.shownIsCorner, true);
+  assert.deepEqual([r.left, r.top, Math.round(r.after.x), Math.round(r.after.y)], [70, 40, 70, 40]);
+});
+
+test('browser: editing inside a sticker reports it (isolationParent) and exitIsolation selects the whole sticker again', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, id = ed.addSticker('burstText', { x: 200, y: 150 }, 100), g = ed._byId(id);
+    ed._enterMember(g._objects[1]); ed.fc.setActiveObject(g._objects[1] || ed.fc.getObjects().find(o => o.type === 'i-text'));
+    const inside = ed.isolationParent();
+    ed.exitIsolation();
+    return { inside, after: ed.isolationParent(), active: ed.fc.getActiveObject() && ed.fc.getActiveObject().id === id, kids: ed._byId(id)._objects.length };
+  });
+  assert.equal(r.inside && r.inside.name, 'Sticker');
+  assert.equal(r.after, null);
+  assert.equal(r.active, true);
+  assert.equal(r.kids, 2);
+});
+
+test('browser: a CTA label typed with its own arrow does not get a second one', async () => {
+  const t = await page.evaluate(() => { const ed = window.__ed; ed.addCTA(null, { text: 'Shop the sale →' }); return ed.fc.getActiveObject()._objects.filter(k => k.text).map(k => k.text); });
+  assert.deepEqual(t, ['Shop the sale', '→']);
+});
+
+test('browser: the paint bucket uses its own tolerance option', async () => {
+  // Two touching bands of close greys: a tight tolerance fills only the clicked one, a wide one crosses into both.
+  const run = async (tol) => {
+    await page.evaluate((tol) => {
+      const ed = window.__ed; ed.fc.getObjects().slice().forEach(o => ed.fc.remove(o));
+      const a = new window.fabric.Rect({ left: 0, top: 0, width: 200, height: 300, fill: '#808080', strokeWidth: 0 });
+      const b = new window.fabric.Rect({ left: 200, top: 0, width: 200, height: 300, fill: '#a0a0a0', strokeWidth: 0 });
+      ed.fc.add(a, b); ed.commit('x');
+      ed.setTool('bucket'); ed.setToolOptions({ color: '#ff0000', bucketTolerance: tol });
+    }, tol);
+    const box = await page.locator('#cv').boundingBox();
+    const vt = await page.evaluate(() => window.__ed.fc.viewportTransform.slice());
+    await page.mouse.click(box.x + vt[4] + 50 * vt[0], box.y + vt[5] + 50 * vt[3]);
+    await page.waitForTimeout(100);
+    return page.evaluate(async () => { const u = window.__ed.exportPNG(1); const im = new Image(); im.src = u; await im.decode(); const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; const x = c.getContext('2d'); x.drawImage(im, 0, 0); return [x.getImageData(50, 50, 1, 1).data[1], x.getImageData(300, 50, 1, 1).data[1]]; });
+  };
+  const tight = await run(4), wide = await run(120);
+  assert.equal(tight[0], 0, 'tight: clicked band is red'); assert.ok(tight[1] > 100, 'tight: the other band is untouched');
+  assert.equal(wide[0], 0, 'wide: clicked band is red'); assert.equal(wide[1], 0, 'wide: the fill crosses into the other band');
+});
+
+/* ── multi-document tabs: the real Editor#loadDocument path ─────────────────────────── */
+test('browser: tabs keep separate artboards, layers and undo history on the real Editor', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, set = new window.__DocumentSet(ed, { persist: false });
+    const out = {};
+    ed.addBadge(); 
+    const aCount = ed.fc.getObjects().length;
+    const a = set.active.id;
+    const b = await set.add({ width: 200, height: 100 });
+    out.bSize = [ed.W, ed.H]; out.bObjs = ed.fc.getObjects().length;
+    ed.addBadge(); ed.addBadge();
+    out.bObjsAfter = ed.fc.getObjects().length;
+    await set.switchTo(a);
+    out.aSize = [ed.W, ed.H]; out.aObjs = ed.fc.getObjects().length; out.aCount = aCount;
+    out.aUndoDepth = ed.history.depth().past;
+    await set.switchTo(b);
+    out.bBack = ed.fc.getObjects().length; out.bUndoDepth = ed.history.depth().past;
+    ed.undo(); await new Promise(r => setTimeout(r, 100));
+    out.bAfterUndo = ed.fc.getObjects().length;
+    return out;
+  });
+  assert.deepEqual(r.bSize, [200, 100]);
+  assert.equal(r.bObjs, 0);
+  assert.equal(r.bObjsAfter, 2);
+  assert.deepEqual(r.aSize, [400, 300]);
+  assert.equal(r.aObjs, r.aCount);
+  assert.equal(r.bBack, 2);
+  assert.equal(r.bAfterUndo, 1);                 // undo walks B's own history, not A's
+  assert.ok(r.bUndoDepth >= 3);
+});
+
+test('browser: Option-drag shows the copy at the start position DURING the drag (Figma), original follows the cursor', async () => {
+  await page.evaluate(() => { const ed = window.__ed; ed.addBadge({ x: 150, y: 150 }); ed.fc.discardActiveObject(); ed.fc.renderAll(); });
+  const start = await page.evaluate(() => { const o = window.__ed.fc.getObjects()[0]; const c = o.getCenterPoint(); const b = document.querySelector('canvas.upper-canvas').getBoundingClientRect(); const z = window.__ed.fc.getZoom(); return { x: b.x + c.x * z, y: b.y + c.y * z, left: o.left, top: o.top, id: o.id }; });
+  await page.keyboard.down('Alt');
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 60, start.y + 40, { steps: 6 });
+  const mid = await page.evaluate(() => window.__ed.fc.getObjects().map(o => ({ id: o.id, left: o.left, top: o.top })));
+  assert.equal(mid.length, 2, 'copy must exist while still dragging');
+  const orig = mid.find(o => o.id === start.id), copy = mid.find(o => o.id !== start.id);
+  assert.ok(Math.abs(copy.left - start.left) < 1 && Math.abs(copy.top - start.top) < 1, 'copy stays at the start position');
+  assert.ok(orig.left > start.left + 30, 'original follows the cursor');
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  assert.equal(await page.evaluate(() => window.__ed.fc.getObjects().length), 2);
+  // one undo removes the duplicate AND the move together
+  await page.evaluate(() => window.__ed.undo()); await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => window.__ed.fc.getObjects().length), 1);
+});
+
+/* ── frames: several artboards on one page ───────────────────────────────────────────── */
+test('browser: frames — add, switch, undo keeps the view still, export every frame, delete with contents, round-trip', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, out = {};
+    const objs = () => ed.fc.getObjects().map(o => ({ id: o.id, l: Math.round(o.left), t: Math.round(o.top) }));
+    const screenX = (o) => Math.round(o.left * ed.fc.getZoom() + ed.fc.viewportTransform[4]);
+    ed.fc.setZoom(1); ed.fc.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    ed.addBadge({ x: 100, y: 100 });
+    const a = ed.fc.getObjects()[0], aLeft0 = Math.round(a.left);
+    const f1 = ed.activeFrameId;
+    const f2 = ed.addFrame({ name: 'Second', width: 200, height: 150 });
+    out.afterAdd = { size: [ed.W, ed.H], frames: ed.frameList().map(f => [f.name, f.width, f.height, f.active]), aLeft: Math.round(a.left) };
+    out.viewStill = screenX(a) === aLeft0;                       // frame 1's badge didn't move on screen
+    ed.addBadge({ x: 50, y: 50 });
+    const b = ed.fc.getObjects()[1];
+    ed.activateFrame(f1);
+    out.back = { size: [ed.W, ed.H], aLeft: Math.round(a.left), bLeft: Math.round(b.left), viewStill: screenX(a) === aLeft0 };
+    ed.activateFrame(f2);
+    ed.undo(); await new Promise(r => setTimeout(r, 150));      // undo the frame switch
+    out.afterUndo = { active: ed.frameList().find(f => f.active).name, viewStill: screenX(ed.fc.getObjects()[0]) === aLeft0 };
+    out.exp = ed.exportAllFrames('png', 1).map(e => e.name);
+    out.activeAfterExport = ed.frameList().find(f => f.active).name;
+    // round trip through the same path tab-switching / autosave uses
+    const json = ed.toJSON();
+    await ed.loadDocument(json, null);
+    out.roundTrip = ed.frameList().map(f => [f.name, f.active]);
+    out.removed = ed.removeFrame(ed.frameList().find(f => f.name === 'Second').id);
+    out.afterRemove = { frames: ed.frameList().length, objs: ed.fc.getObjects().length, size: [ed.W, ed.H] };
+    out.lastFrame = ed.removeFrame(ed.activeFrameId);
+    return out;
+  });
+  assert.deepEqual(r.afterAdd.size, [200, 150]);
+  assert.deepEqual(r.afterAdd.frames.map(f => f[0]), ['Frame 1', 'Second']);
+  assert.ok(r.afterAdd.aLeft < 0, 'frame 1 content sits left of the new active frame');
+  assert.equal(r.viewStill, true);
+  assert.deepEqual(r.back.size, [400, 300]);
+  assert.equal(r.back.viewStill, true);
+  assert.ok(r.back.bLeft > 400, 'frame 2 content sits right of frame 1');
+  assert.equal(r.afterUndo.active, 'Frame 1');                   // undo went back one step: the frame-1 activation
+  assert.equal(r.afterUndo.viewStill, true);
+  assert.deepEqual(r.exp, ['Frame 1', 'Second']);
+  assert.equal(r.activeAfterExport, r.afterUndo.active);
+  assert.equal(r.roundTrip.length, 2);
+  assert.equal(r.removed, true);
+  assert.deepEqual([r.afterRemove.frames, r.afterRemove.objs], [1, 1]);
+  assert.equal(r.lastFrame, false);
+});
+
+test('browser: frames — drag by label moves the frame with its layers; resizing a frame slides neighbours instead of overlapping them', async () => {
+  await page.setViewportSize({ width: 1000, height: 700 });
+  const setup = await page.evaluate(() => {
+    const ed = window.__ed;
+    ed.fc.setDimensions({ width: 900, height: 600 });
+    ed.addBadge({ x: 200, y: 150 }); ed.fc.discardActiveObject();
+    ed.addFrame({ name: 'Second' });
+    ed.addBadge({ x: 200, y: 150 }); ed.fc.discardActiveObject();
+    ed.activateFrame(ed.frameList()[0].id);
+    ed.fc.setViewportTransform([0.3, 0, 0, 0.3, 120, 150]); ed.fc.renderAll();
+    return true;
+  });
+  const geo = () => page.evaluate(() => { const ed = window.__ed; const m = ed._frameMeta(); return { active: m.active, frames: m.frames.map(f => ({ n: f.name, x: Math.round(f.x), y: Math.round(f.y), w: f.w })), objs: ed.fc.getObjects().map(o => Math.round(o.left)) }; });
+  const labelOf = (name) => page.evaluate((n) => { const ed = window.__ed; ed.fc.renderAll(); const id = ed._frames.find(f => f.name === n).id; const l = ed._frameLabels.find(x => x.id === id); return { x: l.x + l.w / 2, y: l.y + l.h / 2 }; }, name);
+  const box = await page.locator('canvas.upper-canvas').boundingBox();
+  const g0 = await geo();                                       // Frame 1 active at 0; Second to its right
+  const gap0 = g0.frames[1].x - g0.frames[0].w;
+
+  // drag the INACTIVE frame ("Second") 90px to the right = 300 scene px: it and its badge travel together, and it becomes the working frame
+  const l2 = await labelOf('Second');
+  await page.mouse.move(box.x + l2.x, box.y + l2.y); await page.mouse.down();
+  await page.mouse.move(box.x + l2.x + 90, box.y + l2.y + 30, { steps: 6 }); await page.mouse.up();
+  const g1 = await geo();
+  const second = g1.frames.find(f => f.n === 'Second'), first = g1.frames.find(f => f.n === 'Frame 1');
+  assert.equal(await page.evaluate(() => window.__ed.frameList().find(f => f.active).name), 'Second', 'the dragged frame becomes active');
+  assert.equal(second.x, 0);
+  assert.ok(Math.abs((0 - first.x - first.w) - (gap0 + 300)) <= 2, 'gap grew by the drag distance');
+  assert.ok(Math.abs(second.y) === 0 && Math.abs(first.y + 100) <= 2, 'vertical offset equals the drag (30px / 0.3 = 100 scene px)');
+
+  // drag the ACTIVE frame 60px left = 200 scene: the other frame must stay put ON SCREEN, the active one follows the cursor
+  const scr = () => page.evaluate(() => { const ed = window.__ed, v = ed.fc.viewportTransform; const f = ed._frames.find(x => x.id !== ed._frameActive); return { other: Math.round(f.x * v[0] + v[4]), act: Math.round(v[4]) }; });
+  const s0 = await scr();
+  const la = await labelOf('Second');
+  await page.mouse.move(box.x + la.x, box.y + la.y); await page.mouse.down();
+  await page.mouse.move(box.x + la.x - 60, box.y + la.y, { steps: 5 }); await page.mouse.up();
+  const s1 = await scr();
+  assert.ok(Math.abs(s1.other - s0.other) <= 1, 'the other frame did not move on screen');
+  assert.ok(Math.abs((s1.act - s0.act) + 60) <= 1, 'the active frame followed the cursor');
+
+  // resize the active frame: neighbour (and its badge) slide by the growth, the gap stays
+  const before = await geo(), gapBefore = (() => { const a = before.frames.find(f => f.n === 'Second'), o = before.frames.find(f => f.n === 'Frame 1'); return a.x - o.x - o.w; })();
+  await page.evaluate(() => window.__ed.resizeCanvas(600, 300));
+  const after = await geo();
+  const act = after.frames.find(f => f.n === 'Second'), oth = after.frames.find(f => f.n === 'Frame 1');
+  assert.equal(act.w, 600);
+  assert.equal(oth.w, 400, 'the other frame keeps its own size');
+  // Frame 1 sits LEFT of Second here, so nothing needed to slide — verify no overlap and gap preserved
+  assert.equal(act.x - oth.x - oth.w, gapBefore);
+  // now the other way: resize Frame 1 (neighbour to its right)
+  await page.evaluate(() => window.__ed.activateFrame(window.__ed.frameList().find(f => f.name === 'Frame 1').id));
+  const b2 = await geo();
+  const rightGap0 = (() => { const a = b2.frames.find(f => f.n === 'Frame 1'), o = b2.frames.find(f => f.n === 'Second'); return o.x - a.w; })();
+  await page.evaluate(() => window.__ed.resizeCanvas(700, 300));
+  const a2 = await geo();
+  const second2 = a2.frames.find(f => f.n === 'Second');
+  assert.equal(second2.x - 700, rightGap0, 'the right-hand neighbour slid by the growth, gap preserved');
+});
+
+/* ── combine shapes (Union / Subtract / Intersect / Exclude / Flatten) ─────────────────── */
+test('browser: combine shapes — needs 2+ vector shapes (never images), Flatten merges them into one path and undoes, boolean ops go through the injected engine', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, F = window.fabric, fc = ed.fc, out = {};
+    const mk = (o) => { o.set({ id: 'o' + Math.random().toString(36).slice(2, 7), role: 'shape' }); fc.add(o); return o; };
+    const a = mk(new F.Rect({ left: 20, top: 20, width: 100, height: 80, fill: '#e53935', shapeKind: 'rect' }));
+    const b = mk(new F.Ellipse({ left: 90, top: 50, rx: 50, ry: 40, fill: '#1e88e5', shapeKind: 'ellipse' }));
+    const c = document.createElement('canvas'); c.width = c.height = 20; c.getContext('2d').fillRect(0, 0, 20, 20);
+    const img = mk(new F.Image(c, { left: 200, top: 20, role: 'image' }));
+    const sel = (...os) => { fc.discardActiveObject(); fc.setActiveObject(new F.ActiveSelection(os, { canvas: fc })); fc.renderAll(); };
+    ed.commit('setup');   // the originals must be in history for Undo to bring them back
+
+    fc.setActiveObject(a);
+    out.single = ed.combineInfo();
+    sel(a, b);
+    out.two = ed.combineInfo();
+    sel(a, b, img);
+    out.withImage = ed.combineInfo();
+    let err = null; try { ed.combineShapes('flatten'); } catch (e) { err = e.message; }
+    out.imageBlocked = err;
+
+    window.__setClipEngine(null);                      // engine switched off: only Flatten stays available
+    sel(a, b);
+    out.engineOff = ed.combineInfo();
+    err = null; try { ed.combineShapes('union'); } catch (e) { err = e.message; }
+    out.noEngine = err;
+    window.__resetClipEngine();
+    out.defaultEngine = ed.combineInfo();
+
+    const before = fc.getObjects().length;
+    const id = ed.combineShapes('flatten');
+    const p = fc.getObjects().find(o => o.id === id);
+    out.flat = { before, after: fc.getObjects().length, type: p.type, name: p.name, fill: p.fill, w: Math.round(p.width), h: Math.round(p.height), left: Math.round(p.left), top: Math.round(p.top) };
+    ed.undo(); await new Promise(r => setTimeout(r, 150));
+    out.afterUndo = fc.getObjects().map(o => o.type);
+
+    // the four boolean ops go to the injected engine: subtract = bottom-most minus the rest
+    const calls = [];
+    window.__setClipEngine({
+      union: (...g) => { calls.push(['union', g.length]); return g[0]; },
+      difference: (g0, ...r) => { calls.push(['difference', 1 + r.length]); return g0; },
+      intersection: (...g) => { calls.push(['intersection', g.length]); return g[0]; },
+      xor: (...g) => { calls.push(['xor', g.length]); return g[0]; },
+    });
+    const ra = fc.getObjects().find(o => o.type === 'rect'), eb = fc.getObjects().find(o => o.type === 'ellipse');
+    sel(ra, eb);
+    out.withEngine = ed.combineInfo();
+    const id2 = ed.combineShapes('subtract');
+    out.subtract = { calls: calls.slice(), name: fc.getObjects().find(o => o.id === id2).name, count: fc.getObjects().filter(o => o.role === 'shape').length };
+    window.__resetClipEngine();
+    return out;
+  });
+  assert.equal(r.single.ok, false); assert.match(r.single.reason, /two or more/i);
+  assert.equal(r.two.ok, true); assert.deepEqual(r.two.ops, { union: true, subtract: true, intersect: true, exclude: true, flatten: true }, 'the vendored polygon engine is on by default');
+  assert.equal(r.withImage.ok, false); assert.match(r.withImage.reason, /Images/);
+  assert.deepEqual(Object.values(r.withImage.ops), [false, false, false, false, false], 'an image disables every operation');
+  assert.match(r.imageBlocked, /Images/);
+  assert.equal(r.engineOff.ops.union, false, 'with the engine switched off the boolean ops go off'); assert.equal(r.engineOff.ops.flatten, true);
+  assert.match(r.noEngine, /polygon engine/);
+  assert.equal(r.defaultEngine.ops.union, true);
+  assert.equal(r.flat.type, 'path'); assert.equal(r.flat.name, 'Flatten'); assert.equal(r.flat.fill, '#e53935', 'takes the bottom-most shape\'s fill');
+  assert.equal(r.flat.after, r.flat.before - 1, 'two shapes became one');
+  assert.ok(r.flat.w >= 119 && r.flat.h >= 79, 'the path spans both shapes');
+  assert.deepEqual(r.afterUndo.filter(t => t !== 'image'), ['rect', 'ellipse'], 'undo brings the originals back');
+  assert.deepEqual(r.withEngine.ops, { union: true, subtract: true, intersect: true, exclude: true, flatten: true });
+  assert.deepEqual(r.subtract.calls, [['difference', 2]]);
+  assert.equal(r.subtract.name, 'Subtract');
+});
+
+test('browser: combine shapes — Union / Subtract / Intersect / Exclude produce the right geometry (real polygon-clipping, net area)', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, F = window.fabric, fc = ed.fc, out = {};
+    const area = (ring) => { let a = 0; for (let i = 0; i < ring.length; i++) { const p = ring[i], q = ring[(i + 1) % ring.length]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; };
+    const netArea = (o) => window.__booleans.objectRings(F, o).reduce((s, r) => s + area(r), 0);   // holes wind the other way, so they subtract
+    for (const op of ['union', 'subtract', 'intersect', 'exclude']) {
+      fc.clear(); fc.backgroundColor = '#fff';
+      const A = new F.Rect({ left: 0, top: 0, width: 100, height: 100, fill: '#e53935' }), B = new F.Rect({ left: 50, top: 50, width: 100, height: 100, fill: '#1e88e5' });
+      [A, B].forEach(o => { o.set({ id: 'o' + Math.random().toString(36).slice(2, 7), role: 'shape', shapeKind: 'rect' }); fc.add(o); });
+      ed.commit('setup');
+      fc.setActiveObject(new F.ActiveSelection([A, B], { canvas: fc })); fc.renderAll();
+      const id = ed.combineShapes(op);
+      const res = fc.getObjects();
+      out[op] = { layers: res.length, area: Math.round(Math.abs(Math.abs(netArea(res[0])))), name: res[0].name, fill: res[0].fill, type: res[0].type };
+    }
+    // subtract with a shape fully inside the other leaves a hole: the donut's net area is outer minus inner
+    fc.clear(); fc.backgroundColor = '#fff';
+    const O = new F.Rect({ left: 0, top: 0, width: 100, height: 100, fill: '#000' }), I = new F.Ellipse({ left: 25, top: 25, rx: 25, ry: 25, fill: '#000' });
+    [O, I].forEach(o => { o.set({ id: 'o' + Math.random().toString(36).slice(2, 7), role: 'shape' }); fc.add(o); });
+    ed.commit('setup2'); fc.setActiveObject(new F.ActiveSelection([O, I], { canvas: fc }));
+    ed.combineShapes('subtract');
+    out.donut = Math.round(netArea(fc.getObjects()[0]));
+    out.donutRings = window.__booleans.objectRings(F, fc.getObjects()[0]).length;
+    return out;
+  });
+  assert.equal(r.union.area, 17500); assert.equal(r.subtract.area, 7500); assert.equal(r.intersect.area, 2500); assert.equal(r.exclude.area, 15000);
+  for (const op of ['union', 'subtract', 'intersect', 'exclude']) {
+    assert.equal(r[op].layers, 1, op + ' leaves one layer'); assert.equal(r[op].type, 'path'); assert.equal(r[op].fill, '#e53935', 'styled like the bottom-most shape');
+  }
+  assert.ok(Math.abs(r.donut - (10000 - Math.PI * 625)) < 60, 'a hole: outer area minus the (96-gon) circle, got ' + r.donut);
+  assert.equal(r.donutRings, 2, 'outer ring + hole ring');
+});
+
+test('browser: add-element buttons cascade instead of stacking every new element on the artboard centre', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, out = [];
+    for (let i = 0; i < 4; i++) { ed.addBadge(null, { text: 'B' + i }); const c = ed.fc.getActiveObject().getCenterPoint(); out.push([Math.round(c.x), Math.round(c.y)]); }
+    out.push([ed.W / 2, ed.H / 2]);
+    return out;
+  });
+  const centre = r[4];
+  assert.ok(Math.abs(r[0][0] - centre[0]) <= 2 && Math.abs(r[0][1] - centre[1]) <= 2, 'the first one lands on the centre: ' + JSON.stringify(r));
+  const keys = new Set(r.slice(0, 4).map(p => p.join(',')));
+  assert.equal(keys.size, 4, 'no two land on the same point: ' + JSON.stringify(r));
+  assert.ok(r[1][1] > r[0][1], 'cascades downward');
+});
+
+test('browser: Text tool — a click makes auto-width text, a drag makes a wrapping text box of that width', async () => {
+  const box = await page.locator('#cv').boundingBox();
+  // click
+  await page.evaluate(() => window.__ed.setTool('type'));
+  await page.mouse.click(box.x + 40, box.y + 40);
+  await page.keyboard.type('Hello'); await page.keyboard.press('Escape');
+  let o = await page.evaluate(() => { const a = window.__ed.fc.getObjects().filter(o => o.role === 'text'); return a.map(t => ({ type: t.type, text: t.text })); });
+  assert.deepEqual(o, [{ type: 'i-text', text: 'Hello' }]);
+  // drag
+  await page.evaluate(() => window.__ed.setTool('type'));
+  await page.mouse.move(box.x + 40, box.y + 200); await page.mouse.down(); await page.mouse.move(box.x + 200, box.y + 230, { steps: 5 }); await page.mouse.up();
+  await page.keyboard.type('a long line of words that has to wrap inside the box'); await page.keyboard.press('Escape');
+  o = await page.evaluate(() => { const t = window.__ed.fc.getObjects().filter(o => o.role === 'text').pop(); return { type: t.type, w: Math.round(t.width), h: Math.round(t.height), fs: t.fontSize, tool: window.__ed.tool, z: window.__ed.fc.getZoom() }; });
+  assert.equal(o.type, 'textbox'); assert.ok(Math.abs(o.w - 160 / o.z) <= 4, 'width follows the drag (160 screen px / zoom ' + o.z + '), got ' + o.w);
+  assert.ok(o.h > o.fs * 1.6, 'wrapped onto several lines, h=' + o.h); assert.equal(o.tool, 'select');
+  // undo walks back through the typing, then the creation, and leaves the first text intact
+  await page.evaluate(() => { window.__ed.undo(); window.__ed.undo(); });
+  assert.equal(await page.evaluate(() => window.__ed.fc.getObjects().filter(o => o.role === 'text').length), 1);
+});
+
+test('browser: price tag picks readable inks for the backdrop it lands on (dark ink on light, light ink on dark)', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, F = window.fabric, fc = ed.fc, out = {};
+    const inks = (g) => { const t = g._objects.filter(k => k.adField); return { cur: t.find(k => k.adField === 'current').fill, save: t.find(k => k.adField === 'save').fill }; };
+    for (const [name, col] of [['light', '#f4f1e6'], ['dark', '#10131a']]) {
+      fc.clear(); const bg = new F.Rect({ left: 0, top: 0, width: ed.W, height: ed.H, fill: col }); bg.set({ id: 'bg' + name, role: 'shape' }); fc.add(bg);
+      const id = ed.addPrice({ x: ed.W / 2, y: ed.H / 2 }, { current: '$9', save: 'Save 10%' });
+      out[name] = inks(fc.getObjects().find(o => o.id === id));
+    }
+    return out;
+  });
+  assert.equal(r.light.cur, '#111114'); assert.notEqual(r.light.save, '#d4ff45', 'lime savings text is unreadable on a light backdrop');
+  assert.equal(r.dark.cur, '#ffffff'); assert.equal(r.dark.save, '#d4ff45');
+});
+
+test('browser: cutout ignores flat bars round a photo (pillarbox/letterbox) so they cannot skew the backdrop model', async () => {
+  const r = await page.evaluate(() => {
+    const ed = window.__ed, mk = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); return c; };
+    // 100x100 photo-ish gradient with 20px white bars left and right
+    const bars = mk(100, 100, (x, w, h) => { x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#c8a070'); g.addColorStop(1, '#503010'); x.fillStyle = g; x.fillRect(20, 0, 60, h); });
+    const none = mk(100, 100, (x, w, h) => { const g = x.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#c8a070'); g.addColorStop(1, '#503010'); x.fillStyle = g; x.fillRect(0, 0, w, h); });
+    const full = { x: 0, y: 0, w: 100, h: 100 };
+    return { bars: ed._trimMargins(bars, full), none: ed._trimMargins(none, full), cropped: ed._trimMargins(bars, { x: 10, y: 0, w: 80, h: 100 }) };
+  });
+  assert.deepEqual(r.none, { x: 0, y: 0, w: 100, h: 100 }, 'no bars: window unchanged');
+  assert.ok(Math.abs(r.bars.x - 20) <= 3 && Math.abs(r.bars.w - 60) <= 6 && r.bars.y === 0 && r.bars.h === 100, 'bars trimmed: ' + JSON.stringify(r.bars));
+  assert.ok(r.cropped.x >= 18 && r.cropped.x + r.cropped.w <= 82, 'works inside an existing crop window: ' + JSON.stringify(r.cropped));
+});
+
+test('browser: a clipPath clips a masked layer — relative and absolute, with a filter chain, and across save/load', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, F = window.fabric, out = {};
+    const c = document.createElement('canvas'); c.width = 100; c.height = 100; const g = c.getContext('2d'); g.fillStyle = '#e53935'; g.fillRect(0, 0, 100, 100);
+    ed.fc.clear(); await ed.addImage(c.toDataURL('image/png'), { name: 'Solid' });
+    const o = ed.fc.getObjects().find(x => x.name === 'Solid'); o.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); o.setCoords();
+    ed.addMask(o.id);   // puts a MaskFilter in the chain: the case that was suspected of ignoring clipPath
+    const sample = async (x, y) => { const u = await ed.exportPNG(1), im = new Image(); await new Promise(res => { im.onload = res; im.src = u; }); const k = document.createElement('canvas'); k.width = im.width; k.height = im.height; const q = k.getContext('2d'); q.drawImage(im, 0, 0); return Array.from(q.getImageData(x, y, 1, 1).data); };
+    const isRed = (p) => p[0] > 200 && p[1] < 90, isWhite = (p) => !(p[0] > 200 && p[1] < 90);   // clipped away = whatever the artboard shows, i.e. not the layer's red
+    const leftHalf = (abs) => { o.clipPath = abs ? new F.Rect({ left: 0, top: 0, width: 50, height: 100, absolutePositioned: true }) : new F.Rect({ left: -50, top: -50, width: 50, height: 100, originX: 'left', originY: 'top' }); o.dirty = true; ed.fc.requestRenderAll(); };
+    const check = async (tag) => { out[tag] = [isRed(await sample(25, 50)), isWhite(await sample(75, 50))]; };
+    leftHalf(false); await check('relative');
+    leftHalf(true); await check('absolute');
+    ed.fc.setActiveObject(o); ed.setImageFilters({ saturate: 110, brightness: 100 }); await check('with filters');
+    const json = ed.toJSON(); await ed.loadJSON(json); await new Promise(res => setTimeout(res, 600));
+    out.survived = !!ed.fc.getObjects().find(x => x.name === 'Solid').clipPath; await check('after reload');
+    return out;
+  });
+  for (const k of ['relative', 'absolute', 'with filters', 'after reload']) assert.deepEqual(r[k], [true, true], k + ': inside the clip is drawn, outside is not');
+  assert.ok(r.survived, 'clipPath serialised');
+});
+
+test('browser: Sharpen adjusts a real layer — steepens an edge, survives save/load, and 0 restores the original', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, out = {};
+    const c = document.createElement('canvas'); c.width = 100; c.height = 20; const g = c.getContext('2d');
+    g.fillStyle = '#646464'; g.fillRect(0, 0, 50, 20); g.fillStyle = '#a0a0a0'; g.fillRect(50, 0, 50, 20);   // a hard edge between two greys
+    ed.fc.clear(); await ed.addImage(c.toDataURL('image/png'), { name: 'Edge' });
+    const o = ed.fc.getObjects().find(x => x.name === 'Edge'); o.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); o.setCoords(); ed.fc.setActiveObject(o);
+    const sample = async (x, y) => { const u = await ed.exportPNG(1), im = new Image(); await new Promise(res => { im.onload = res; im.src = u; }); const k = document.createElement('canvas'); k.width = im.width; k.height = im.height; const q = k.getContext('2d'); q.drawImage(im, 0, 0); return q.getImageData(x, y, 1, 1).data[0]; };
+    out.base = [await sample(49, 10), await sample(50, 10)];
+    ed.setImageFilters({ sharpen: 100 }); out.sharp = [await sample(49, 10), await sample(50, 10)];
+    out.fx = ed.getImageFilters().sharpen;
+    const json = ed.toJSON(); await ed.loadJSON(json); await new Promise(res => setTimeout(res, 600));
+    const o2 = ed.fc.getObjects().find(x => x.name === 'Edge');
+    out.reloaded = [await sample(49, 10), await sample(50, 10)]; out.reloadedFx = o2.fx && o2.fx.sharpen;
+    ed.fc.setActiveObject(o2); ed.setImageFilters({ sharpen: 0 }); out.off = [await sample(49, 10), await sample(50, 10)];
+    return out;
+  });
+  assert.ok(r.sharp[0] < r.base[0] && r.sharp[1] > r.base[1], 'dark side darker, light side lighter: ' + JSON.stringify(r));
+  assert.equal(r.fx, 100);
+  assert.deepEqual(r.reloaded, r.sharp, 'same pixels after save/load'); assert.equal(r.reloadedFx, 100);
+  assert.deepEqual(r.off, r.base, 'sharpen 0 is the original image again');
+});
+
+test('browser: Sharpen radius changes how far the effect reaches, and is saved with the layer', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, out = {};
+    const c = document.createElement('canvas'); c.width = 100; c.height = 20; const g = c.getContext('2d');
+    g.fillStyle = '#646464'; g.fillRect(0, 0, 50, 20); g.fillStyle = '#a0a0a0'; g.fillRect(50, 0, 50, 20);
+    ed.fc.clear(); await ed.addImage(c.toDataURL('image/png'), { name: 'Edge' });
+    const o = ed.fc.getObjects().find(x => x.name === 'Edge'); o.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); o.setCoords(); ed.fc.setActiveObject(o);
+    const sample = async (x) => { const u = await ed.exportPNG(1), im = new Image(); await new Promise(res => { im.onload = res; im.src = u; }); const k = document.createElement('canvas'); k.width = im.width; k.height = im.height; const q = k.getContext('2d'); q.drawImage(im, 0, 0); return q.getImageData(x, 10, 1, 1).data[0]; };
+    ed.setImageFilters({ sharpen: 100, sharpenRadius: 0.5 }); out.tight = [await sample(49), await sample(46)];   // 1px and 4px from the edge, dark side
+    ed.setImageFilters({ sharpen: 100, sharpenRadius: 4 }); out.wide = [await sample(49), await sample(46)];
+    out.fx = ed.getImageFilters().sharpenRadius;
+    const json = ed.toJSON(); await ed.loadJSON(json); await new Promise(res => setTimeout(res, 600));
+    out.reloaded = [await sample(49), await sample(46)]; out.reloadedFx = ed.fc.getObjects().find(x => x.name === 'Edge').fx.sharpenRadius;
+    return out;
+  });
+  assert.equal(r.tight[1], 100, 'a tight radius leaves a pixel 4px from the edge alone: ' + JSON.stringify(r));
+  assert.ok(r.wide[1] < 100, 'a wide radius reaches it: ' + JSON.stringify(r));
+  assert.equal(r.fx, 4); assert.equal(r.reloadedFx, 4);
+  assert.deepEqual(r.reloaded, r.wide, 'same pixels after save/load');
+});
+
+test('browser: gradient tool on a layer mask — drag lays reveal->hide, Alt reverses, one undo step, nothing leaks onto the layer', async () => {
+  const setup = async () => page.evaluate(async () => {
+    const ed = window.__ed; ed.fc.clear();
+    const mk = (col) => { const c = document.createElement('canvas'); c.width = 200; c.height = 150; const g = c.getContext('2d'); g.fillStyle = col; g.fillRect(0, 0, 200, 150); return c.toDataURL('image/png'); };
+    await ed.addImage(mk('#0000ff'), { name: 'Under' }); await ed.addImage(mk('#ff0000'), { name: 'Top' });
+    const top = ed.fc.getObjects().find(o => o.name === 'Top'); ed.fc.setActiveObject(top); ed.addMask(top.id); ed.enterMaskEdit(top.id); ed.setTool('gradient');
+    return { W: ed.W, H: ed.H };
+  });
+  const dims = await setup();
+  const box = await page.locator('#cv').boundingBox(), z = await page.evaluate(() => window.__ed.fc.getZoom()), vt = await page.evaluate(() => window.__ed.fc.viewportTransform);
+  const toClient = (x, y) => ({ x: box.x + vt[4] + x * z, y: box.y + vt[5] + y * z });
+  const drag = async (a, b, alt) => { const p = toClient(...a), q = toClient(...b); if (alt) await page.keyboard.down('Alt'); await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(q.x, q.y, { steps: 5 }); await page.mouse.up(); if (alt) await page.keyboard.up('Alt'); await page.waitForTimeout(150); };
+  const maskAt = (y) => page.evaluate((y) => { const m = window.__ed.fc.getObjects().find(o => o.name === 'Top').maskCanvas; return m.getContext('2d').getImageData(Math.floor(m.width / 2), Math.min(m.height - 1, Math.floor(y * m.height / window.__ed.H)), 1, 1).data[0]; }, y);
+  await drag([dims.W / 2, 10], [dims.W / 2, dims.H - 10]);
+  const down = [await maskAt(12), await maskAt(dims.H / 2), await maskAt(dims.H - 12)];
+  assert.ok(down[0] > 235 && down[2] < 20 && down[1] > 100 && down[1] < 160, 'white at the start, black at the end, grey between: ' + down);
+  assert.equal(await page.evaluate(() => { const t = window.__ed.fc.getObjects().find(o => o.name === 'Top'); return !!(t.fill && t.fill.colorStops); }), false, 'no gradient fill leaked onto the layer');
+  await drag([dims.W / 2, 10], [dims.W / 2, dims.H - 10], true);
+  const up = [await maskAt(12), await maskAt(dims.H - 12)];
+  assert.ok(up[0] < 20 && up[1] > 235, 'Alt reverses it: ' + up);
+  await page.evaluate(() => window.__ed.undo()); await page.waitForTimeout(300);
+  const back = [await maskAt(12), await maskAt(dims.H - 12)];
+  assert.ok(back[0] > 235 && back[1] < 20, 'one undo returns to the first gradient: ' + back);
+});
+
+test('browser: fillMaskGradient blends a layer into the one below (rendered), radial works, and bad input is refused', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, out = {}; ed.fc.clear();
+    const mk = (col) => { const c = document.createElement('canvas'); c.width = 200; c.height = 150; const g = c.getContext('2d'); g.fillStyle = col; g.fillRect(0, 0, 200, 150); return c.toDataURL('image/png'); };
+    await ed.addImage(mk('#0000ff'), { name: 'Under' }); await ed.addImage(mk('#ff0000'), { name: 'Top' });
+    const [under, top] = ['Under', 'Top'].map(n => ed.fc.getObjects().find(o => o.name === n)); [under, top].forEach(o => { o.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); o.setCoords(); });
+    const px = async (x, y) => { const u = await ed.exportPNG(1), im = new Image(); await new Promise(res => { im.onload = res; im.src = u; }); const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; const g = c.getContext('2d'); g.drawImage(im, 0, 0); return Array.from(g.getImageData(x, y, 1, 1).data); };
+    out.noMask = await px(100, 140);
+    out.res = ed.fillMaskGradient(top.id, { x: 100, y: 10 }, { x: 100, y: 140 });
+    out.top = await px(100, 6); out.bottom = await px(100, 144); out.mid = await px(100, 75);
+    out.hasMask = !!top.maskCanvas;
+    ed.fillMaskGradient(top.id, { x: 100, y: 75 }, { x: 100, y: 5 }, { radial: true, reverse: true }); out.radialCentreHidden = (await px(100, 75))[0] < 30; out.radialEdgeShown = (await px(100, 140))[0] > 200;
+    out.bad = [ed.fillMaskGradient(top.id, { x: 5, y: 5 }, { x: 5, y: 5 }), ed.fillMaskGradient('nope', { x: 0, y: 0 }, { x: 1, y: 1 })].map(x => x.reason);
+    return out;
+  });
+  assert.ok(r.noMask[0] > 240 && r.noMask[2] < 20, 'top layer covers the bottom one before the mask: ' + r.noMask);
+  assert.equal(r.res.status, 'ok'); assert.ok(r.hasMask, 'a mask is added when the layer had none');
+  assert.ok(r.top[0] > 200 && r.top[2] < 60, 'revealed at the gradient start (red): ' + r.top);
+  assert.ok(r.bottom[2] > 200 && r.bottom[0] < 60, 'hidden at the end, the layer below shows (blue): ' + r.bottom);
+  assert.ok(r.mid[0] > 60 && r.mid[2] > 60, 'a true blend in the middle: ' + r.mid);
+  assert.ok(r.radialCentreHidden && r.radialEdgeShown, 'radial + reverse hides the centre');
+  assert.deepEqual(r.bad, ['bad_points', 'not_maskable']);
+});
+
+test('browser: gradient tool dragged over a photo paints pixels into a paint layer — it no longer sticks an invisible fill on the image', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed; ed.fc.clear();
+    const c = document.createElement('canvas'); c.width = 200; c.height = 150; const g = c.getContext('2d'); g.fillStyle = '#336699'; g.fillRect(0, 0, 200, 150);
+    await ed.addImage(c.toDataURL('image/png'), { name: 'Photo' });
+    const o = ed.fc.getObjects().find(x => x.name === 'Photo'); o.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); o.setCoords(); ed.fc.setActiveObject(o); ed.setTool('gradient');
+    return { W: ed.W, H: ed.H };
+  });
+  const box = await page.locator('#cv').boundingBox(), z = await page.evaluate(() => window.__ed.fc.getZoom()), vt = await page.evaluate(() => window.__ed.fc.viewportTransform);
+  const at = (x, y) => ({ x: box.x + vt[4] + x * z, y: box.y + vt[5] + y * z });
+  const a = at(20, 20), b = at(r.W - 20, r.H - 20);
+  await page.mouse.move(a.x, a.y); await page.mouse.down(); await page.mouse.move(b.x, b.y, { steps: 5 }); await page.mouse.up(); await page.waitForTimeout(300);
+  const after = await page.evaluate(() => { const ed = window.__ed, photo = ed.fc.getObjects().find(x => x.name === 'Photo'); return { fillOnPhoto: !!(photo.fill && photo.fill.colorStops), roles: ed.fc.getObjects().map(o => o.role || o.type) }; });
+  assert.equal(after.fillOnPhoto, false, 'the image must not receive a gradient fill');
+  assert.ok(after.roles.includes('paint'), 'the gradient was painted into a paint layer: ' + after.roles);
+});
+
+test('browser: fillMaskGradient {multiply} combines two edge feathers (left x top) instead of replacing the first', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed; ed.fc.clear();
+    const c = document.createElement('canvas'); c.width = 200; c.height = 200; const g = c.getContext('2d'); g.fillStyle = '#ff0000'; g.fillRect(0, 0, 200, 200);
+    await ed.addImage(c.toDataURL('image/png'), { name: 'Layer' });
+    const o = ed.fc.getObjects().find(x => x.name === 'Layer'); o.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); o.setCoords();
+    ed.fillMaskGradient(o.id, { x: 120, y: 100 }, { x: 40, y: 100 });                       // hidden at the left, revealed from x=120
+    ed.fillMaskGradient(o.id, { x: 100, y: 120 }, { x: 100, y: 40 }, { multiply: true });    // ...and hidden at the top, revealed from y=120
+    const m = o.maskCanvas, v = (x, y) => { const q = ed._imageMaskPoint(o, { x, y }, 1); return m.getContext('2d').getImageData(Math.min(m.width - 1, Math.floor(q.x)), Math.min(m.height - 1, Math.floor(q.y)), 1, 1).data[0]; };
+    return { tl: v(10, 10), tr: v(190, 10), bl: v(10, 190), br: v(190, 190), W: ed.W };
+  });
+  assert.ok(r.br > 235, 'revealed only where both gradients reveal (bottom-right): ' + JSON.stringify(r));
+  assert.ok(r.tl < 20 && r.tr < 20 && r.bl < 20, 'hidden wherever EITHER edge fade hides it: ' + JSON.stringify(r));
+});
+
+test('browser: a border on a rounded photo is drawn at full width along the rounded corners (not clipped to its inner half, no square corners)', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed; ed.fc.clear(); ed.fc.backgroundColor = '#ffffff';
+    const c = document.createElement('canvas'); c.width = 120; c.height = 120; const g = c.getContext('2d'); g.fillStyle = '#0000ff'; g.fillRect(0, 0, 120, 120);
+    await ed.addImage(c.toDataURL('image/png'), { name: 'P' });
+    const o = ed.fc.getObjects().find(x => x.name === 'P'); o.set({ originX: 'left', originY: 'top', left: 140, top: 90, scaleX: 1, scaleY: 1 }); o.setCoords(); ed.fc.setActiveObject(o);
+    ed.setNumeric({ rx: 40 }); ed.setStroke({ color: '#ff0000', width: 16 });
+    const sw = 16, L = o.left + sw / 2, T = o.top + sw / 2, W = o.getScaledWidth() - sw, H = o.getScaledHeight() - sw;   // the image's own edge (the box includes the border's outer half)
+    const px = async (x, y) => { const u = await ed.exportPNG(1), im = new Image(); await new Promise(res => { im.onload = res; im.src = u; }); const k = document.createElement('canvas'); k.width = im.width; k.height = im.height; const q = k.getContext('2d'); q.drawImage(im, 0, 0); return Array.from(q.getImageData(Math.round(x), Math.round(y), 1, 1).data); };
+    const red = (p) => p[0] > 200 && p[1] < 60 && p[2] < 60, my = T + H / 2, mx = L + W / 2, d = 40 * (1 - Math.SQRT1_2);
+    return { box: [L, T, W, H], outer: red(await px(L - 4, my)), inner: red(await px(L + 4, my)), right: red(await px(L + W + 4, my)), top: red(await px(mx, T - 4)), bottom: red(await px(mx, T + H + 4)),
+      squareCorner: red(await px(L - 7, T - 7)), roundCorner: red(await px(L + d, T + d)) };
+  });
+  assert.ok(r.outer && r.inner, 'both halves of the border show on the left edge: ' + JSON.stringify(r));
+  assert.ok(r.right && r.top && r.bottom, 'no edge is cut off: ' + JSON.stringify(r));
+  assert.equal(r.squareCorner, false, 'no square corner poking out: ' + JSON.stringify(r));
+  assert.ok(r.roundCorner, 'the border follows the rounded corner: ' + JSON.stringify(r));
+});
+
+test('browser: matchColor pulls a layer toward a reference, is non-destructive, undoable, saved, and refuses bad targets', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, out = {}; ed.fc.clear(); ed.fc.backgroundColor = '#000000';
+    const mk = (col) => { const c = document.createElement('canvas'); c.width = 60; c.height = 60; const g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 60, 0); gr.addColorStop(0, col[0]); gr.addColorStop(1, col[1]); g.fillStyle = gr; g.fillRect(0, 0, 60, 60); return c.toDataURL('image/png'); };
+    await ed.addImage(mk(['#203040', '#406080']), { name: 'Src' }); await ed.addImage(mk(['#c08040', '#f0c070']), { name: 'Ref' });
+    const [src, ref] = ['Src', 'Ref'].map(n => ed.fc.getObjects().find(o => o.name === n));
+    src.set({ left: 0, top: 0, scaleX: 1, scaleY: 1 }); ref.set({ left: 200, top: 0, scaleX: 1, scaleY: 1 }); [src, ref].forEach(o => o.setCoords());
+    const px = async (x, y) => { const u = await ed.exportPNG(1), im = new Image(); await new Promise(res => { im.onload = res; im.src = u; }); const k = document.createElement('canvas'); k.width = im.width; k.height = im.height; const q = k.getContext('2d'); q.drawImage(im, 0, 0); return Array.from(q.getImageData(x, y, 1, 1).data).slice(0, 3); };
+    out.before = await px(30, 30);
+    out.res = ed.matchColor(src.id, ref.id); out.after = await px(30, 30);
+    out.stored = !!src.fx.match; out.srcUntouched = (src._originalElement || src._element).src.length > 0 && !src.maskCanvas;
+    ed.undo(); await new Promise(res => setTimeout(res, 300)); const s2 = ed.fc.getObjects().find(o => o.name === 'Src'); out.undone = !s2.fx || !s2.fx.match;
+    ed.redo(); await new Promise(res => setTimeout(res, 300));
+    const json = ed.toJSON(); await ed.loadJSON(json); await new Promise(res => setTimeout(res, 600));
+    const s3 = ed.fc.getObjects().find(o => o.name === 'Src'); out.reloaded = await px(30, 30); out.reloadedMatch = !!(s3.fx && s3.fx.match);
+    out.bad = [ed.matchColor(s3.id, s3.id).reason, ed.matchColor('nope', s3.id).reason];
+    out.cleared = ed.matchColor(s3.id, null).cleared; out.back = await px(30, 30);
+    return out;
+  });
+  assert.equal(r.res.status, 'ok'); assert.ok(r.stored);
+  assert.ok(r.after[0] > r.before[0] + 50 && r.after[2] < r.before[2] + 20, `a cold blue layer turns warm: ${r.before} -> ${r.after}`);
+  assert.ok(r.undone, 'undo removes it'); assert.ok(r.reloadedMatch); assert.deepEqual(r.reloaded, r.after, 'same pixels after save/load');
+  assert.deepEqual(r.bad, ['bad_reference', 'not_image']); assert.deepEqual(r.back, r.before, 'clearing restores the original');
+});
+
+test('browser: matchColorSources lists other photos (not the layer itself, adjustment layers or shapes) and the match remembers its reference', async () => {
+  const r = await page.evaluate(async () => {
+    const ed = window.__ed, F = window.fabric; ed.fc.clear();
+    const mk = (c1) => { const c = document.createElement('canvas'); c.width = 40; c.height = 40; const g = c.getContext('2d'); g.fillStyle = c1; g.fillRect(0, 0, 40, 40); return c.toDataURL('image/png'); };
+    await ed.addImage(mk('#204060'), { name: 'A' }); await ed.addImage(mk('#c08040'), { name: 'B' });
+    ed.fc.add(new F.Rect({ left: 0, top: 0, width: 10, height: 10, id: 'shp', role: 'shape' })); ed.addAdjustmentLayer({});
+    const [a, b] = ['A', 'B'].map(n => ed.fc.getObjects().find(o => o.name === n));
+    const out = { forA: ed.matchColorSources(a.id).map(x => x.name), forB: ed.matchColorSources(b.id).map(x => x.name) };
+    ed.matchColor(a.id, b.id, { amount: 0.6 }); out.stored = { ref: a.fx.match.ref === b.id, amount: a.fx.match.amount };
+    return out;
+  });
+  assert.deepEqual(r.forA, ['B']); assert.deepEqual(r.forB, ['A']);
+  assert.deepEqual(r.stored, { ref: true, amount: 0.6 });
+});
+
+test('browser: trapDialog moves focus in, cycles Tab/Shift+Tab inside the dialog and restores focus on release', async () => {
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML('beforeend', '<button id="opener">open</button><div id="dlg"><button id="d1">one</button><button id="d2">two</button></div><button id="after">after</button>');
+    document.getElementById('opener').focus();
+    window.__release = window.__trapDialog(document.getElementById('dlg'), { initial: '#d1' });
+  });
+  const inside = () => page.evaluate(() => document.getElementById('dlg').contains(document.activeElement));
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'd1');
+  await page.keyboard.press('Tab'); assert.equal(await page.evaluate(() => document.activeElement.id), 'd2');
+  await page.keyboard.press('Tab'); assert.equal(await page.evaluate(() => document.activeElement.id), 'd1', 'wraps forward instead of escaping to #after');
+  await page.keyboard.press('Shift+Tab'); assert.equal(await page.evaluate(() => document.activeElement.id), 'd2', 'wraps backward');
+  assert.ok(await inside());
+  await page.evaluate(() => window.__release());
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'opener', 'focus restored');
+});
+
+test('browser: blendThumb draws a different preview for every blend mode, and every mode is one the canvas can really draw', async () => {
+  const r = await page.evaluate(async () => {
+    const { BLEND_MODES, blendThumb } = await import('/packages/core/src/index.js');
+    const urls = BLEND_MODES.map(([v]) => blendThumb(v));
+    const ctx = document.createElement('canvas').getContext('2d');
+    return { n: BLEND_MODES.length, distinct: new Set(urls).size, supported: BLEND_MODES.every(([v]) => { ctx.globalCompositeOperation = v; return ctx.globalCompositeOperation === v; }) };
+  });
+  assert.equal(r.n, 15); assert.equal(r.distinct, 15, 'no two modes share a thumbnail'); assert.ok(r.supported);
+});
+
+test('browser: a project file carries every page — export then open restores all tabs, frames and layers, and old single-page files still open', async () => {
+  const r = await page.evaluate(async () => {
+    const { exportProject, loadProject, DocumentSet } = await import('/packages/core/src/index.js');
+    const ed = window.__ed, F = window.fabric, out = {};
+    const docs = new DocumentSet(ed, { persist: false });
+    const rect = (n, c) => { ed.fc.add(new F.Rect({ left: 20, top: 20, width: 60, height: 40, fill: c, id: 'i' + n, role: 'shape', name: n, shapeKind: 'rect' })); ed.commit(n); };
+    rect('one-red', '#e53935'); ed.addFrame(); rect('one-blue', '#1e88e5');
+    await docs.add({ name: 'Second' }); rect('two-green', '#43a047');
+    const text = exportProject(ed, { assets: [] }, docs);
+    out.hasPages = JSON.parse(text).pages.docs.length;
+    // a brand new tab set + empty canvas, as in a fresh browser
+    const docs2 = new DocumentSet(ed, { persist: false }); ed.reset({ width: 300, height: 200 });
+    await loadProject(ed, text, docs2);
+    out.tabs = docs2.list().map(d => d.name + (d.active ? '*' : '')); out.live = ed.layers().map(l => l.name);
+    await docs2.switchTo(docs2.list()[0].id);
+    out.p1 = { frames: ed.frameList().length, layers: ed.layers().map(l => l.name).sort() };
+    // an old file (no pages) loads into whatever is open
+    const old = JSON.stringify({ kind: 'canvasmith/project', v: 1, scene: ed.toJSON(), extras: {} });
+    out.old = Object.keys(await loadProject(ed, old, docs2)).length >= 0;
+    return out;
+  });
+  assert.equal(r.hasPages, 2); assert.deepEqual(r.tabs, ['Untitled 1', 'Second*']); assert.deepEqual(r.live, ['two-green']);
+  assert.equal(r.p1.frames, 2); assert.deepEqual(r.p1.layers, ['one-blue', 'one-red']); assert.ok(r.old);
 });

@@ -115,15 +115,16 @@ export function splitGradientStopColor(color) {
 
 /* Defaults for non-destructive image adjustment (Editor#setImageFilters/getImageFilters). Human
    units: brightness/contrast/saturate are 100 = unchanged (50..150-ish range), blur is px (0 =
-   none), hue is degrees (-180..180, 0 = unchanged), vibrance is -100..100 (0 = unchanged, same
+   none), sharpen is 0..100 (0 = off) and sharpenRadius 0.5..6 px (see sharpen.js), hue is degrees (-180..180, 0 = unchanged), vibrance is -100..100 (0 = unchanged, same
    shape as saturate but weighted toward already-muted colors), invert is a plain on/off toggle.
    The photographic keys (exposure/highlights/shadows/temperature/tint/curves/hsl) come from
    tone.js's TONE_DEFAULTS — see its header for their units. */
-export const FX_DEFAULTS = { brightness: 100, contrast: 100, saturate: 100, blur: 0, hue: 0, vibrance: 0, invert: false, ...TONE_DEFAULTS };
+export const FX_DEFAULTS = { brightness: 100, contrast: 100, saturate: 100, blur: 0, sharpen: 0, sharpenRadius: 1, match: null, hue: 0, vibrance: 0, invert: false, ...TONE_DEFAULTS };
 
 /* The adjustment panel's slider list, shared by both shells (demo + @canvasmith/react) so they
    can't drift apart: each entry is one FX_DEFAULTS key with its slider range in human units.
-   `track` (optional) is a CSS gradient painted as the slider track instead of the usual accent
+   `short` (optional) is the on-screen label when the full `label` — which stays the accessible name and
+   tooltip, and must be unique — is too long for the label column. `track` (optional) is a CSS gradient painted as the slider track instead of the usual accent
    fill — white balance reads far better as "blue ← → amber" than as a progress bar. Invert, the
    curves editor and the HSL mixer aren't sliders and are rendered separately by each shell. */
 export const ADJUST_CONTROLS = [
@@ -137,6 +138,8 @@ export const ADJUST_CONTROLS = [
   { group: 'Color', key: 'saturate', label: 'Saturation', icon: 'droplet', min: 0, max: 200, step: 1 },
   { group: 'Color', key: 'vibrance', label: 'Vibrance', icon: 'vibrance', min: -100, max: 100, step: 1 },
   { group: 'Color', key: 'hue', label: 'Hue', icon: 'hue', min: -180, max: 180, step: 1 },
+  { group: 'Effects', key: 'sharpen', label: 'Sharpen', icon: 'sharpen', min: 0, max: 100, step: 1 },
+  { group: 'Effects', key: 'sharpenRadius', label: 'Sharpen radius', short: 'Radius', icon: 'radius', min: 0.5, max: 6, step: 0.5 },
   { group: 'Effects', key: 'blur', label: 'Blur', icon: 'blurfilter', min: 0, max: 12, step: 0.5 },
 ];
 
@@ -166,9 +169,14 @@ export function fxToFilterSpecs(fx) {
     // first, so exposure/white balance see the untouched pixels (the raw-developer order) and
     // brightness/contrast/etc. then act on the developed image
     { type: 'Tone', params: tone },
+    // Match Color (colormatch.js): {g:[3], o:[3], amount}, set by Editor#matchColor; absent when unused
+    ...(f.match && f.match.g ? [{ type: 'ColorMatch', params: { g: f.match.g, o: f.match.o, amount: f.match.amount != null ? f.match.amount : 1 } }] : []),
     { type: 'Brightness', params: { brightness: (f.brightness - 100) / 100 } },
     { type: 'Contrast', params: { contrast: (f.contrast - 100) / 100 } },
     { type: 'Saturation', params: { saturation: (f.saturate - 100) / 100 } },
+    // last of the tonal/colour work, so it sharpens the finished look; only present when in use
+    // (a 3x3 pass over every pixel is not free, and 0 is the overwhelmingly common state)
+    ...(f.sharpen > 0 ? [{ type: 'Sharpen', params: { amount: f.sharpen, radius: f.sharpenRadius } }] : []),
     { type: 'Blur', params: { blur: f.blur / 20 } },
     { type: 'HueRotation', params: { rotation: f.hue / 180 } },
     { type: 'Vibrance', params: { vibrance: f.vibrance / 100 } },

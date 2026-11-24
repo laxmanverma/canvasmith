@@ -12,15 +12,21 @@ export {
   selectionPolys, polysToSelection, addPolyToSelection, selectionBounds, HoverCache,
 } from './selection.js';
 export { makeShape, makeText, layerLabel, describeLayer, layerTypeLabel, isContainerGroup, starPoints, uid, FONT_GROUPS, FONT_STYLESHEET_URL, MATCH_FONTS, fontCss } from './shapes.js';
+export { addGoogleFont, addCustomFont, restoreUserFonts, removeUserFont } from './fonts.js';
 export { makeCTA, makeBadge, makePrice, makeBrandLockup, autoFitText, applyLegibilityShadow } from './adtext.js';
 export { buildLayerFromSpec, buildPromoLayout, scrimFill } from './templates.js';
-export { getCropHandle, dragCropRect, applyCrop } from './crop.js';
+export { getCropHandle, dragCropRect, applyCrop, fitCropRect, clampCropRect } from './crop.js';
 export { alignDelta, snapDelta } from './layout.js';
 export { strokeInfo, canPositionStroke } from './stroke.js';
-export { EXTRA, serialize, restore, exportImage, addImageLayer, artboardForImage, loadImageEl } from './io.js';
+export { EXTRA, serialize, restore, exportImage, addImageLayer, imageLayerName, artboardForImage, loadImageEl } from './io.js';
 export { installAutosave, restoreSession, readSession, writeSession, clearSession, SESSION_KEY,
   discardToTrash, readDiscarded, clearDiscarded, restoreDiscarded, TRASH_KEY,
   exportProject, parseProject, loadProject } from './session.js';
+export { BOOLEAN_OPS, BOOLEAN_LABEL, setClipEngine, resetClipEngine, hasClipEngine, combinableReason, objectRings, combineRings } from './booleans.js';
+export { DocumentSet, installDocuments, DOCS_KEY, MAX_DOCS } from './docs.js';
+export { mountBlendPicker, blendThumb, blendThumbFrom, BLEND_GROUPS, BLEND_MODES } from './blendpicker.js';
+export { trapDialog, focusableIn } from './dialog.js';
+export { installColorPicker, openColorPicker, closeColorPicker } from './colorpicker.js';
 export { selectionClipObject, renderSelectedPixels } from './pixels.js';
 export { AIRegistry, CAPABILITIES } from './ai/registry.js';
 export { GeminiProvider } from './ai/gemini.js';
@@ -36,5 +42,9 @@ export { makeToneFilterClass, applyTone, isToneNeutral, buildCurveLut, whiteBala
   MAX_CURVE_POINTS, normalizeCurves, compactCurves, curveHitTest, curveInsertPoint, curveMovePoint, curveRemovePoint, curveSvgPath, lumaHistogram,
   HSL_PROPS, hslBandLabel, getHslValue, setHslValue, hslBandTrack } from './tone.js';
 export { makeGeometryFilterClass, applyGeometry, isGeometryNeutral, straightenScale, keystoneQuad, squareToQuad, mapHomography, geometrySourcePoint, GEOMETRY_DEFAULTS, UNIT_QUAD, GEOMETRY_CONTROLS, formatGeometryValue } from './geometry.js';
+export { colorStats, computeMatch, applyMatch, makeColorMatchFilterClass } from './colormatch.js';
+export { applySharpen, makeSharpenFilterClass, SHARPEN_MAX, SHARPEN_RADIUS } from './sharpen.js';
 export { makeMaskFilterClass, createMaskCanvas, maskStamp, maskLine } from './mask.js';
-export { STICKER_GROUPS, STICKER_PALETTE, stickerSpec, STICKER_DEFAULT_LABEL } from './stickers.js';
+export { STICKER_GROUPS, STICKER_PALETTE, stickerSpec, stickerLabel, STICKER_DEFAULT_LABEL } from './stickers.js';
+export { installVoice, parseVoiceCommand, parseVoiceCommands, runVoiceCommand, normalizeLLMCommand, catalogPrompt, COMMANDS as VOICE_COMMANDS } from './voice.js';
+export { rankCommands } from './cmdk.js';

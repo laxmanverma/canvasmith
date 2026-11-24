@@ -1,0 +1,15 @@
+{
+  "name": "canvasmith",
+  "description": "Canvasmith: an image editor that runs inside Claude.",
+  "owner": { "name": "Rizwan", "url": "https://github.com/Rizwanhoda" },
+  "plugins": [
+    {
+      "name": "canvasmith",
+      "source": "./plugins/claude-plugin",
+      "description": "Image editor that opens inline in Claude: layers, selections, crop, text, filters. Runs locally.",
+      "version": "0.1.1",
+      "license": "MIT",
+      "keywords": ["image", "editor", "photo", "design"]
+    }
+  ]
+}
