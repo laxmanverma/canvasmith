@@ -1,0 +1,10 @@
+{
+  "name": "canvasmith",
+  "version": "0.1.1",
+  "description": "A Photoshop-grade image editor that opens right inside your Claude conversation: layers, selections, crop, text, filters. Runs locally.",
+  "author": { "name": "Rizwan", "url": "https://github.com/Rizwanhoda" },
+  "homepage": "https://canvasmith.netlify.app",
+  "repository": "https://github.com/Rizwanhoda/canvasmith",
+  "license": "MIT",
+  "keywords": ["image", "editor", "photo", "design", "canvas", "layers", "mcp-app"]
+}

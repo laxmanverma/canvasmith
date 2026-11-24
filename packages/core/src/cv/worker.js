@@ -224,6 +224,65 @@ export function cvWorkerBody() {
     for (i = 0; i < n; i++) { var v = mb[i]; for (k = 0; k < 3; k++) v += ma[k][i] * I[k][i]; q[i] = v < 0 ? 0 : v > 1 ? 1 : v; }
     return q;
   }
+  // Fill each connected piece of a 0/1 mask out to its convex hull (an object's body lies between its salient bits).
+  function hullFill(bin, W, H) {
+    var m = new cv.Mat(H, W, cv.CV_8UC1), cs = new cv.MatVector(), hr = new cv.Mat();
+    m.data.set(bin);
+    cv.findContours(m, cs, hr, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    var out = new cv.Mat(H, W, cv.CV_8UC1, new cv.Scalar(0));
+    for (var i = 0; i < cs.size(); i++) {
+      var c = cs.get(i), h = new cv.Mat(); cv.convexHull(c, h, false, true);
+      var hv = new cv.MatVector(); hv.push_back(h); cv.fillPoly(out, hv, new cv.Scalar(1));
+      hv.delete(); h.delete(); c.delete();
+    }
+    var res = new Uint8Array(out.data); m.delete(); cs.delete(); hr.delete(); out.delete();
+    return res;
+  }
+  /* Studio shots sit on a smooth backdrop — often a gradient, so no single border colour matches it
+     all. Flood it from the frame edge one small step at a time (neighbour-to-neighbour Lab distance),
+     never crossing a sharp edge: what the flood can't reach is enclosed by an outline. That catches a
+     subject whose colour is close to the backdrop (a white bottle on pale green) through its edges,
+     where colour distance alone ranks it below the props around it. `lab` is OpenCV's 8-bit Lab.
+     Returns null when the backdrop isn't smooth (the flood stalls early: texture, a busy scene). */
+  function edgeEnclosed(lab, W, H) {
+    var n = W * H, i, x, y, bar = new Uint8Array(n);
+    for (y = 1; y < H - 1; y++) for (x = 1; x < W - 1; x++) {
+      i = y * W + x;
+      var g = 0;
+      for (var k = 0; k < 3; k++) { var gx = lab[(i + 1) * 3 + k] - lab[(i - 1) * 3 + k], gy = lab[(i + W) * 3 + k] - lab[(i - W) * 3 + k]; g += gx * gx + gy * gy; }
+      if (g > 100) bar[i] = 1;   // a sharp step (> 10 in 8-bit Lab over two pixels)
+    }
+    bar = morph(bar, W, H, 1, true);
+    var reach = new Uint8Array(n), st = new Int32Array(n), sp = 0, got = 0;
+    var near = function (a, b) { var p = a * 3, q = b * 3, d0 = lab[p] - lab[q], d1 = lab[p + 1] - lab[q + 1], d2 = lab[p + 2] - lab[q + 2]; return d0 * d0 + d1 * d1 + d2 * d2 < 25; };
+    var seed = function (q) { if (!reach[q] && !bar[q]) { reach[q] = 1; st[sp++] = q; got++; } };
+    for (x = 0; x < W; x++) { seed(x); seed((H - 1) * W + x); }
+    for (y = 0; y < H; y++) { seed(y * W); seed(y * W + W - 1); }
+    while (sp) {
+      var q = st[--sp], qx = q % W;
+      if (qx > 0 && !reach[q - 1] && !bar[q - 1] && near(q, q - 1)) { reach[q - 1] = 1; st[sp++] = q - 1; got++; }
+      if (qx < W - 1 && !reach[q + 1] && !bar[q + 1] && near(q, q + 1)) { reach[q + 1] = 1; st[sp++] = q + 1; got++; }
+      if (q >= W && !reach[q - W] && !bar[q - W] && near(q, q - W)) { reach[q - W] = 1; st[sp++] = q - W; got++; }
+      if (q < n - W && !reach[q + W] && !bar[q + W] && near(q, q + W)) { reach[q + W] = 1; st[sp++] = q + W; got++; }
+    }
+    if (got < n * 0.4) return null;
+    var enc = new Uint8Array(n);
+    for (i = 0; i < n; i++) enc[i] = reach[i] ? 0 : 1;
+    return enc;
+  }
+  // 0/1 mask with every region the frame can't reach through 0s filled in.
+  function fillHoles(bin, W, H) {
+    var n = W * H, out = new Uint8Array(n), st = new Int32Array(n), sp = 0, x, y;
+    var seed = function (q) { if (!bin[q] && !out[q]) { out[q] = 1; st[sp++] = q; } };
+    for (x = 0; x < W; x++) { seed(x); seed((H - 1) * W + x); }
+    for (y = 0; y < H; y++) { seed(y * W); seed(y * W + W - 1); }
+    while (sp) {
+      var q = st[--sp], qx = q % W;
+      if (qx > 0) seed(q - 1); if (qx < W - 1) seed(q + 1); if (q >= W) seed(q - W); if (q < n - W) seed(q + W);
+    }
+    for (var i = 0; i < n; i++) out[i] = out[i] ? 0 : 1;
+    return out;
+  }
   function morph(bin, W, H, r, dilate) {
     var m = new cv.Mat(H, W, cv.CV_8UC1), o = new cv.Mat();
     m.data.set(bin);
@@ -266,7 +325,7 @@ export function cvWorkerBody() {
        the same not-backdrop test; faint noise doesn't, so it still goes. */
     var reach = Math.max(3, Math.round(Math.min(W, H) * 0.02));
     var inv = new cv.Mat(H, W, cv.CV_8UC1), dtm = new cv.Mat();
-    for (var pass = 0; pass < 3; pass++) {
+    for (var pass = 0; pass < 12; pass++) {
       // distance from every pixel to the nearest kept one (one linear pass, unlike a big dilation)
       for (i = 0; i < n; i++) inv.data[i] = (L[i] && keep[L[i]]) ? 0 : 255;
       cv.distanceTransform(inv, dtm, cv.DIST_L2, 3);
@@ -288,6 +347,13 @@ export function cvWorkerBody() {
       fill[c] = (!onEdge && st.intAt(c, cv.CC_STAT_AREA) < area * 0.003) ? 1 : 0;
     }
     L = lab.data32S;
+    /* A hole that IS backdrop-coloured is a real opening (the counter of an R or an O) — only holes
+       of some other colour (a dog's eye, a speck GrabCut missed) are filled. */
+    if (o.holeDist) {
+      var hs = new Float64Array(cnt), hn = new Float64Array(cnt);
+      for (i = 0; i < n; i++) if (fill[L[i]]) { hs[L[i]] += o.holeDist[i]; hn[L[i]]++; }
+      for (c = 1; c < cnt; c++) if (fill[c] && hs[c] / hn[c] < distMin) fill[c] = 0;
+    }
     if (hints) for (i = 0; i < n; i++) if (hints[i] === cv.GC_BGD && fg[i] === 0) fill[L[i]] = 0;
     for (i = 0; i < n; i++) if (fill[L[i]]) fg[i] = 1;
     [m, lab, st, ce].forEach(function (x2) { x2.delete(); });
@@ -342,9 +408,18 @@ export function cvWorkerBody() {
     var d = mask.data, hasB = false, hasF = false;
     for (var i = 0; i < d.length && !(hasB && hasF); i++) { var v = d[i]; if (v === cv.GC_BGD || v === cv.GC_PR_BGD) hasB = true; else hasF = true; }
     if (!hasB || !hasF) return false;
-    var bg = new cv.Mat(), fg = new cv.Mat();
-    try { cv.grabCut(img, mask, new cv.Rect(0, 0, 1, 1), bg, fg, iters, cv.GC_INIT_WITH_MASK); }
-    finally { bg.delete(); fg.delete(); }
+    var bg = new cv.Mat(), fg = new cv.Mat(), lit = null;
+    /* On a dark picture the differences that separate the subject from the backdrop (black glass vs
+       near-black foliage) are a few levels apart, and GrabCut's colour models and edge term barely
+       see them. Lifting the shadows first spreads them out; only the copy handed to GrabCut changes. */
+    var id = img.data, sum = 0, cnt = 0;
+    for (i = 0; i < id.length; i += 37) { sum += id[i]; cnt++; }
+    if (sum / cnt < 90) {
+      var lut = new Uint8Array(256); for (i = 0; i < 256; i++) lut[i] = Math.round(255 * Math.pow(i / 255, 0.35));
+      lit = img.clone(); var ld = lit.data; for (i = 0; i < ld.length; i++) ld[i] = lut[ld[i]];
+    }
+    try { cv.grabCut(lit || img, mask, new cv.Rect(0, 0, 1, 1), bg, fg, iters, cv.GC_INIT_WITH_MASK); }
+    finally { bg.delete(); fg.delete(); if (lit) lit.delete(); }
     return true;
   }
   /* Make the kept GrabCut labels agree with a cleaned mask, so a later touch-up resumes from
@@ -379,10 +454,27 @@ export function cvWorkerBody() {
     var t = Math.max(2, Math.round(Math.min(W, H) * 0.02));
     var ring = ringSamples(lab, W, H, t), cl = kmeans(ring, 3);
     var gc = new cv.Mat(H, W, cv.CV_8UC1, new cv.Scalar(cv.GC_PR_BGD)); mats.push(gc);
-    var res = null, method = null, bgConst = null;
+    var res = null, method = null, bgConst = null, clean = null;   // clean: the clean-up options a touch-up reuses
+
+    /* 0 — already cut out: a frame that is (nearly) all transparent means the background is gone
+       already (a PNG icon, a sticker). Transparent pixels still carry RGB — usually black — so
+       keying them as a colour would take every black outline with them; the image's own alpha IS
+       the cut. */
+    var A = img.data, edgeN = 0, edgeClear = 0;
+    var edgePx = function (q) { edgeN++; if (A[q * 4 + 3] < 16) edgeClear++; };
+    for (i = 0; i < W; i++) { edgePx(i); edgePx((H - 1) * W + i); }
+    for (i = 1; i < H - 1; i++) { edgePx(i * W); edgePx(i * W + W - 1); }
+    if (edgeClear >= edgeN * 0.9) {
+      var alphaA = new Float32Array(n), gA = gc.data, keptA = 0;
+      for (i = 0; i < n; i++) {
+        var a = A[i * 4 + 3] / 255; alphaA[i] = a; keptA += a;
+        gA[i] = a >= 0.5 ? cv.GC_PR_FGD : a === 0 ? cv.GC_BGD : cv.GC_PR_BGD;   // labels for touch-ups
+      }
+      if (keptA > 0) { res = { alpha: alphaA, decon: null }; method = 'alpha'; }
+    }
 
     // 1 — plain backdrop
-    if (cl[0].share >= 0.85 && cl[0].spread <= 9) {
+    if (!res && cl[0].share >= 0.85 && cl[0].spread <= 9) {
       var c0 = cl[0].c, L = lab.data, D = new Float32Array(n);
       for (i = 0; i < n; i++) { var j = i * 3, x0 = L[j] - c0[0], x1 = L[j + 1] - c0[1], x2 = L[j + 2] - c0[2]; D[i] = Math.sqrt(x0 * x0 + x1 * x1 + x2 * x2); }
       var HI = Math.max(16, cl[0].spread * 3.5), LO = HI * 0.45;
@@ -410,7 +502,7 @@ export function cvWorkerBody() {
         for (i = 0; i < n; i++) if (reg[i] && D[i] < LO) { sum[0] += rd[i * 3]; sum[1] += rd[i * 3 + 1]; sum[2] += rd[i * 3 + 2]; cntB++; }
         bgConst = cntB ? [sum[0] / cntB, sum[1] / cntB, sum[2] / cntB] : null;
         res = { alpha: alpha, decon: decontaminate(alpha, rgb, W, H, bgConst, 2) };
-        method = 'flat';
+        method = 'flat'; clean = { minAbs: 0.0002, dist: D, distMin: HI * 1.6 };
         var g = gc.data;   // labels for later touch-up strokes
         for (i = 0; i < n; i++) g[i] = alpha[i] >= 0.5 ? cv.GC_PR_FGD : (reg[i] && D[i] < LO ? cv.GC_BGD : cv.GC_PR_BGD);
       }
@@ -429,16 +521,33 @@ export function cvWorkerBody() {
         var px = [LC[i * 3], LC[i * 3 + 1], LC[i * 3 + 2]], md = Infinity;
         for (var b = 0; b < bgs.length; b++) md = Math.min(md, Math.sqrt(d2(px, bgs[b].c)));
         nearBg[i] = md;
-        var cx = (i % cw) / cw - 0.5, cy = Math.floor(i / cw) / ch - 0.5;
-        sal[i] = md * (0.55 + 0.45 * Math.exp(-(cx * cx + cy * cy) / 0.18));
-        if (sal[i] > mx) mx = sal[i];
+        sal[i] = md;
+        if (md > mx) mx = md;
       }
       var s8 = new cv.Mat(ch, cw, cv.CV_8UC1), sb = new cv.Mat(); mats.push(s8, sb);
       for (i = 0; i < cn; i++) s8.data[i] = mx ? Math.round(sal[i] / mx * 255) : 0;
       cv.threshold(s8, sb, 0, 1, cv.THRESH_BINARY | cv.THRESH_OTSU);
       var salBin = new Uint8Array(sb.data);
-      salBin = morph(morph(salBin, cw, ch, 1, false), cw, ch, 1, true);   // open: drop speckle
-      cleanMask(salBin, cw, ch, {});
+      cleanMask(salBin, cw, ch, { minAbs: 0.0002, dist: nearBg, distMin: 30 });   // small but clearly-not-backdrop pieces (logo, tagline) stay
+      /* A dark product on a dark backdrop barely differs in colour, so only its bright bits (cap,
+         logo, label text) stand out and the body between them would be seeded as backdrop. Close the
+         gaps between nearby salient pieces and take each group's convex hull: what they enclose is
+         probably the same object. Only a PROBABLE-subject seed — the definite core still comes from
+         salBin, since forcing the hull drags the backdrop between the groups in. */
+      var cr = Math.max(2, Math.round(Math.min(cw, ch) * 0.06));
+      var salSeed = hullFill(morph(morph(salBin, cw, ch, cr, true), cw, ch, cr, false), cw, ch);
+      /* A pale body between a gold collar and a stand has too little colour contrast to be salient —
+         but its outline closes it off from the backdrop. Add the outlines the edge-aware flood found,
+         close small gaps (a splash crossing the edge) and fill what they enclose. Filled, not hulled:
+         a horizon line running frame to frame encloses nothing, where a hull would span the frame. */
+      var enc = edgeEnclosed(LC, cw, ch);
+      if (enc) {
+        for (i = 0; i < cn; i++) enc[i] |= salBin[i];
+        var encFill = fillHoles(morph(morph(enc, cw, ch, cr, true), cw, ch, cr, false), cw, ch);
+        // ...except backdrop showing through inside an enclosure (the ring of a splash): exactly the
+        // border colour, where even a pale subject differs a little.
+        for (i = 0; i < cn; i++) if (encFill[i] && nearBg[i] >= 11) salSeed[i] = 1;
+      }
       // the detector's largest box around the salient mass also counts as probable subject
       var sx = 0, sy = 0, sn = 0;
       for (i = 0; i < cn; i++) if (salBin[i]) { sx += i % cw; sy += Math.floor(i / cw); sn++; }
@@ -457,7 +566,7 @@ export function cvWorkerBody() {
       for (i = 0; i < cn; i++) {
         var X = i % cw, Y = Math.floor(i / cw);
         var inBox = box && X >= box.x && X <= box.x + box.w && Y >= box.y && Y <= box.y + box.h;
-        if (salBin[i] || inBox) { G[i] = cv.GC_PR_FGD; anyF = true; }
+        if (salSeed[i] || salBin[i] || inBox) { G[i] = cv.GC_PR_FGD; anyF = true; }
         if (dmax >= 3 && dt.data32F[i] >= dmax * 0.45) G[i] = cv.GC_FGD;
         var edge = X < 2 || Y < 2 || X >= cw - 2 || Y >= ch - 2;
         if (edge && nearBg[i] < 14) G[i] = cv.GC_BGD;   // only where the ring IS backdrop — a subject cut by the frame survives
@@ -488,17 +597,36 @@ export function cvWorkerBody() {
           if (runGrab(ic, mc, 2)) mc.copyTo(rm);
           [ri, rm, ic, mc].forEach(function (m) { m.delete(); });
           var fgF = labelsToFg(gc, n);
-          cleanMask(fgF, W, H, {});
+          /* As on the plain path, a small piece (logo, tagline) stays when it clearly isn't backdrop
+             colour, however small next to the biggest object. */
+          var LF = lab.data, DF = new Float32Array(n);
+          for (i = 0; i < n; i++) {
+            var pd = [LF[i * 3], LF[i * 3 + 1], LF[i * 3 + 2]], mdF = Infinity;
+            for (var bb = 0; bb < bgs.length; bb++) mdF = Math.min(mdF, d2(pd, bgs[bb].c));
+            DF[i] = Math.sqrt(mdF);
+          }
+          cleanMask(fgF, W, H, { minAbs: 0.0002, dist: DF, distMin: 30, holeDist: DF });
           syncLabels(gc, fgF, n);
           var tot = 0; for (i = 0; i < n; i++) tot += fgF[i];
-          if (tot > n * 0.005 && tot < n * 0.98) { res = finishCut(fgF, rgb, W, H, null); method = 'grabcut'; }
+          if (tot > n * 0.005 && tot < n * 0.98) { res = finishCut(fgF, rgb, W, H, null); method = 'grabcut'; clean = { minAbs: 0.0002, dist: DF, distMin: 30 }; }
         }
       }
     }
     src.delete(); lab.delete();
     if (!res) { rgb.delete(); gc.delete(); return { empty: true }; }
-    CUT = { rgb: rgb, gc: gc, W: W, H: H, bgConst: bgConst, method: method, alpha: res.alpha, decon: res.decon };
+    CUT = { rgb: rgb, gc: gc, W: W, H: H, bgConst: bgConst, method: method, alpha: res.alpha, decon: res.decon, clean: clean };
     return packCut(res, W, H, method);
+  }
+
+  /* After an undo/redo the layer's mask is whatever that history state held — the labels must
+     follow it, or a touch-up stroke that was undone would keep steering every later re-cut.
+     `alpha` (0-255, cutout px) becomes probable subject / backdrop; hard hints are dropped. */
+  function cutSync(alpha) {
+    if (!CUT || !alpha || alpha.length !== CUT.W * CUT.H) return false;
+    var d = CUT.gc.data, n = CUT.W * CUT.H, a = new Float32Array(n);
+    for (var i = 0; i < n; i++) { a[i] = alpha[i] / 255; d[i] = alpha[i] >= 128 ? cv.GC_PR_FGD : cv.GC_PR_BGD; }
+    CUT.alpha = a; CUT.decon = null;   // no edge colours kept for the restored state; a re-cut makes its own
+    return true;
   }
 
   /* Keep/Remove touch-up: strokes [{ keep, r, pts:[{x,y}] }] in cutout px become definite
@@ -530,7 +658,11 @@ export function cvWorkerBody() {
       [ri, rm, ic, mc].forEach(function (m) { m.delete(); });
     }
     var fg = labelsToFg(gc, n);
-    cleanMask(fg, W, H, { hints: gc.data });   // same clean-up as the first cut, minus anything a stroke asked for
+    /* Same clean-up as the first cut, minus anything a stroke asked for. Its small-but-distinct
+       rule matters here: a Keep that grows the main subject would otherwise shrink every separate
+       piece (a flying almond) below the size cut-off and drop it. */
+    var co = { hints: gc.data }; if (CUT.clean) for (var ck in CUT.clean) co[ck] = CUT.clean[ck];
+    cleanMask(fg, W, H, co);
     syncLabels(gc, fg, n);
     var res = finishCut(fg, CUT.rgb, W, H, CUT.bgConst);
     /* Only the stroke's own area changes: outside the re-cut rect (plus the edge filter's reach)
@@ -567,6 +699,71 @@ export function cvWorkerBody() {
       }
     }
     labels.delete(); stats.delete(); cents.delete();
+  }
+
+  /* Small in-focus parts that belong to the object `region` (mask, 255 = yes) but were cut off it — a spray
+     cap, a lid, a handle — as a mask to OR in, or null. See the call site in wand().
+     Product photos are mostly a sharp subject on a soft backdrop, so "in focus" (local gradient energy,
+     outlines filled) finds such parts even when their colour (black) is the backdrop's. A candidate must be
+     SMALL next to the object, sit within a short reach of it, and stand right above (or below) a stretch of
+     the object at least as wide as itself — that is what separates a cap on a bottle from a letter or a leaf
+     that merely happens to be nearby. The smooth neck between them is bridged. */
+  function focusExtension(rgb, region, W, H) {
+    var regionArea = cv.countNonZero(region), M = Math.max(W, H);
+    var gray = new cv.Mat(), gx = new cv.Mat(), gy = new cv.Mat(), mag = new cv.Mat(), m8 = new cv.Mat(), fm = new cv.Mat();
+    var k = null, labels = new cv.Mat(), stats = new cv.Mat(), cents = new cv.Mat(), out = null, zone = null;
+    try {
+      cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
+      cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+      cv.Sobel(gray, gx, cv.CV_32F, 1, 0, 3); cv.Sobel(gray, gy, cv.CV_32F, 0, 1, 3);
+      cv.magnitude(gx, gy, mag);
+      var bs = Math.max(5, (Math.round(M / 90) | 1));
+      cv.blur(mag, mag, new cv.Size(bs, bs));                       // local sharpness energy
+      cv.convertScaleAbs(mag, m8, 255 / 400);
+      var ot = cv.threshold(m8, fm, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+      cv.threshold(m8, fm, Math.max(6, ot * 0.5), 255, cv.THRESH_BINARY);
+      var cov = cv.countNonZero(fm) / (W * H);
+      if (cov > 0.4 || cov < 0.01) return null;                      // everything sharp (or nothing): no usable focus cue
+      k = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(bs * 2 + 1, bs * 2 + 1));
+      cv.morphologyEx(fm, fm, cv.MORPH_CLOSE, k);
+      var cvs = new cv.MatVector(), hh = new cv.Mat();
+      cv.findContours(fm, cvs, hh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      for (var ci = 0; ci < cvs.size(); ci++) cv.drawContours(fm, cvs, ci, new cv.Scalar(255), -1);   // fill enclosed outlines
+      cvs.delete(); hh.delete();
+      var n = cv.connectedComponentsWithStats(fm, labels, stats, cents, 8, cv.CV_32S);
+      var ld = labels.data32S, rd = region.data, reach = Math.round(M * 0.08);
+      out = cv.Mat.zeros(H, W, cv.CV_8UC1); var od = out.data, added = 0;
+      zone = cv.Mat.zeros(H, W, cv.CV_8UC1); var zd = zone.data;
+      // does the object occupy columns [x0,x1) anywhere in rows [y0,y1)? -> share of those columns
+      var share = function (x0, x1, y0, y1) {
+        y0 = Math.max(0, y0); y1 = Math.min(H, y1); x0 = Math.max(0, x0); x1 = Math.min(W, x1);
+        if (y1 <= y0 || x1 <= x0) return { f: 0, y: -1 };
+        var hit = 0, first = -1;
+        for (var x = x0; x < x1; x++) for (var y = y0; y < y1; y++) if (rd[y * W + x]) { hit++; if (first < 0 || y < first) first = y; break; }
+        return { f: hit / (x1 - x0), y: first };
+      };
+      for (var li = 1; li < n; li++) {
+        var bx = stats.intPtr(li, cv.CC_STAT_LEFT)[0], by = stats.intPtr(li, cv.CC_STAT_TOP)[0], bw = stats.intPtr(li, cv.CC_STAT_WIDTH)[0], bh = stats.intPtr(li, cv.CC_STAT_HEIGHT)[0], ba = stats.intPtr(li, cv.CC_STAT_AREA)[0];
+        if (ba > regionArea * 0.12 || ba < 12) continue;
+        var below = share(bx, bx + bw, by + bh, by + bh + reach), above = share(bx, bx + bw, by - reach, by);
+        var side = below.f >= 0.6 ? below : above.f >= 0.6 ? above : null;
+        if (!side) continue;
+        for (var yy2 = by; yy2 < by + bh; yy2++) for (var xx2 = bx; xx2 < bx + bw; xx2++) if (ld[yy2 * W + xx2] === li) { od[yy2 * W + xx2] = 255; added++; }
+        /* The collar / neck between the part and the object has no edges of its own, and is a little wider than
+           the cap above it. Mark a generous zone around it as UNDECIDED (128 = its centre, 255 = the rest); the
+           caller lets a local grabCut sort the black collar from the green backdrop inside that zone. */
+        var nx0 = Math.max(0, bx - Math.round(bw * 0.4)), nx1 = Math.min(W, bx + Math.round(bw * 1.4));
+        var ya = side === below ? by + bh : side.y, yb = side === below ? side.y : by;
+        for (var yy3 = Math.max(0, ya - 2); yy3 < Math.min(H, yb + 2); yy3++) for (var xx3 = nx0; xx3 < nx1; xx3++) {
+          var core3 = xx3 >= bx + Math.round(bw * 0.3) && xx3 < bx + Math.round(bw * 0.7);
+          zd[yy3 * W + xx3] = core3 ? 128 : (zd[yy3 * W + xx3] === 128 ? 128 : 255); added++;
+        }
+      }
+      if (!added) { out.delete(); out = null; zone.delete(); zone = null; }
+    } catch (e) { if (out) { out.delete(); } if (zone) { zone.delete(); } out = null; zone = null; }
+    [gray, gx, gy, mag, m8, fm, labels, stats, cents].forEach(function (m) { m.delete(); });
+    if (k) k.delete();
+    return out ? { parts: out, zone: zone } : null;
   }
 
   // Hybrid color->object magic wand: flood-fill the same-colour pixels at the click (within `tol`),
@@ -632,6 +829,44 @@ export function cvWorkerBody() {
         fm = cv.Mat.zeros(H, W, cv.CV_8UC1); var gd = gm.data, fd = fm.data;
         for (var i = 0; i < gd.length; i++) { var v = gd[i]; if (v === cv.GC_FGD || v === cv.GC_PR_FGD) fd[i] = 255; }
         [gm, core, bg, fg].forEach(function (m) { m.delete(); });
+      }
+      /* Focus cue. A colour flood only learns ONE colour of the object (a red label), so grabCut reads the
+         object's other parts — a black spray cap, a dark glass neck — as part of the dark backdrop and
+         leaves them out. Product photos are mostly a sharp subject on a soft backdrop, so look for the
+         small IN-FOCUS pieces that sit against the cut and add them. Skipped when most of the frame is
+         sharp (no depth of field to learn from). */
+      if (area <= W * H * 0.9) {
+        var fx = focusExtension(rgb, fm, W, H);
+        if (fx) {
+          var uni = new cv.Mat(); cv.bitwise_or(fm, fx.parts, uni);
+          var gz = new cv.Mat(H, W, cv.CV_8UC1, new cv.Scalar(cv.GC_BGD));          // outside the zone everything is already decided
+          gz.setTo(new cv.Scalar(cv.GC_FGD), uni);
+          var zd2 = fx.zone.data, gzd = gz.data, ux0 = W, uy0 = H, ux1 = 0, uy1 = 0;
+          for (var zi = 0; zi < zd2.length; zi++) if (zd2[zi]) {
+            var zx = zi % W, zy = (zi / W) | 0;
+            if (zx < ux0) ux0 = zx; if (zx > ux1) ux1 = zx; if (zy < uy0) uy0 = zy; if (zy > uy1) uy1 = zy;
+            if (gzd[zi] !== cv.GC_FGD) gzd[zi] = zd2[zi] === 128 ? cv.GC_PR_FGD : cv.GC_PR_BGD;
+          }
+          var gpad = Math.round(Math.max(W, H) * 0.05);
+          var grx = Math.max(0, ux0 - gpad), gry = Math.max(0, uy0 - gpad), gr = new cv.Rect(grx, gry, Math.min(W, ux1 + gpad) - grx, Math.min(H, uy1 + gpad) - gry);
+          var got = false;
+          if (gr.width > 8 && gr.height > 8) {
+            var gri = rgb.roi(gr).clone(), grm = gz.roi(gr).clone(), gbg = new cv.Mat(), gfg = new cv.Mat();
+            try {
+              cv.grabCut(gri, grm, new cv.Rect(0, 0, 1, 1), gbg, gfg, 2, cv.GC_INIT_WITH_MASK);
+              var rd3 = grm.data, fd3 = fm.data;
+              for (var ry3 = 0; ry3 < gr.height; ry3++) for (var rx3 = 0; rx3 < gr.width; rx3++) {
+                var v3 = rd3[ry3 * gr.width + rx3], gi3 = (gry + ry3) * W + grx + rx3;
+                if (zd2[gi3] && (v3 === cv.GC_FGD || v3 === cv.GC_PR_FGD)) fd3[gi3] = 255;
+              }
+              got = true;
+            } catch (e) { got = false; }
+            [gri, grm, gbg, gfg].forEach(function (m) { m.delete(); });
+          }
+          cv.bitwise_or(fm, fx.parts, fm);
+          if (!got) { var nk = new cv.Mat(); cv.bitwise_and(fx.zone, fx.zone, nk); cv.bitwise_or(fm, nk, fm); nk.delete(); }
+          [uni, gz, fx.parts, fx.zone].forEach(function (m) { m.delete(); });
+        }
       }
       cv.GaussianBlur(fm, fm, new cv.Size(3, 3), 0); cv.threshold(fm, fm, 127, 255, cv.THRESH_BINARY);
       var cs = new cv.MatVector(), h = new cv.Mat(); cv.findContours(fm, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE);
@@ -740,6 +975,7 @@ export function cvWorkerBody() {
         self.postMessage({ id: m.id, cut: cr }, tr);
       }
       else if (m.type === 'cutfree') { cutFree(); self.postMessage({ id: m.id, ok: true }); }
+      else if (m.type === 'cutsync') { self.postMessage({ id: m.id, ok: cutSync(m.alpha) }); }
     }
     catch (err) { self.postMessage({ id: m.id, error: String((err && err.message) || err) }); }
   }

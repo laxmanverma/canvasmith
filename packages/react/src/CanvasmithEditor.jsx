@@ -5,10 +5,10 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  Editor, makeText, makeShape, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, ALL_TOOLS, PAINT_TOOLS, SEL_TOOLS, SHAPE_TOOLS, GeminiProvider, installBridge, installDropImport, installKeybindings, TOOL_KEYS,
-  selectionPolys, selectionToPath2D, FONT_GROUPS, FONT_STYLESHEET_URL, STICKER_GROUPS, STICKER_PALETTE, stickerSpec, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME, relLum, hexRgb, rgba, splitGradientStopColor,
+  Editor, makeText, makeShape, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, ALL_TOOLS, PAINT_TOOLS, SEL_TOOLS, SHAPE_TOOLS, GeminiProvider, installBridge, installDropImport, imageLayerName, rankCommands, layerLabel, installKeybindings, installVoice, installColorPicker, trapDialog, mountBlendPicker, TOOL_KEYS,
+  selectionPolys, selectionToPath2D, FONT_GROUPS, FONT_STYLESHEET_URL, addGoogleFont, addCustomFont, restoreUserFonts, searchGoogleFonts, loadFontPreviews, searchIcons, iconUrl, ICON_SUGGESTIONS, STICKER_GROUPS, STICKER_PALETTE, stickerSpec, stickerLabel, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME, relLum, hexRgb, rgba, splitGradientStopColor,
   startSelection, updateSelection, finalizeSelection, startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild, snapToEdge, selectionBounds,
-  installAutosave, restoreSession, discardToTrash, restoreDiscarded, exportProject, loadProject,
+  installAutosave, restoreSession, readSession, DocumentSet, MAX_DOCS, discardToTrash, restoreDiscarded, exportProject, loadProject,
   FX_DEFAULTS, ADJUST_CONTROLS, formatAdjustValue, GEOMETRY_DEFAULTS, GEOMETRY_CONTROLS, formatGeometryValue,
   HSL_BANDS, HSL_PROPS, hslBandLabel, getHslValue, setHslValue, hslBandTrack,
   CURVE_CHANNELS, normalizeCurves, compactCurves, curveHitTest, curveInsertPoint, curveMovePoint, curveRemovePoint, curveSvgPath,
@@ -27,6 +27,7 @@ const BRUSH_SWATCHES = ['#ffffff', '#000000', '#4f8ff0', '#d76b8f', '#d4ff45', '
 const CANVAS_PRESETS = [
   ['Social', [
     ['Instagram post (1:1)', 1080, 1080],
+    ['Instagram portrait (4:5)', 1080, 1350],
     ['Instagram story (9:16)', 1080, 1920],
     ['Facebook cover', 820, 312],
     ['Twitter/X post', 1200, 675],
@@ -86,7 +87,7 @@ const ICON_PATHS = {
   similar: 'circle:7,7,3|circle:17,7,3|circle:7,17,3|circle:17,17,3',
   shadow: 'rect:5,4,14,14,2 M9 22h10a2 2 0 0 0 2-2V10',
   svg: 'm8 3 4 4 4-4M12 7v10M5 21h14',
-  rect: 'M3 8l9-5 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8',                     // ditto's box
+  rect: 'rect:3,6,18,12,2',                                                  // a plain rectangle: the Rectangle tool, shape layers (ditto drew a 3D box, which read as a 3D tool)
   ellipse: 'ellipse:12,12,9,7',
   image: 'rect:3,4,18,16,2|circle:9,10,2|M21 17l-5-5-8 8',                        // + menu's Image… (same glyph as @canvasmith/react's image icon)
   line: 'M4 8h10M18 8h2M4 16h2M10 16h10M14 6v4M6 14v4',                       // ditto's sliders
@@ -133,6 +134,8 @@ const ICON_PATHS = {
   contrast: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18',                  // ditto's contrast
   droplet: 'M12 3s6 5.7 6 10a6 6 0 0 1-12 0c0-4.3 6-10 6-10z',               // ditto's droplet, for Saturation
   blurfilter: 'M4 5h16l-6 8v5l-4 2v-7L4 5z',                                 // ditto's filter, for Blur
+  sharpen: 'M12 4l9 15H3L12 4zM12 10v4',                                     // Sharpen: a crisp-edged triangle
+  radius: 'M12 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M12 12m-8 0a8 8 0 1 0 16 0a8 8 0 1 0 -16 0',   // Radius: a dot inside a ring
   lock: 'M6 11V8a6 6 0 0 1 12 0v3M5 11h14v9H5z',
   unlock: 'M6 11V8a6 6 0 0 1 11.2-3M5 11h14v9H5z',
   magnet: 'M6 4v7a6 6 0 0 0 12 0V4M6 4h4v7a2 2 0 0 0 4 0V4h4M6 8h4M14 8h4',
@@ -140,16 +143,27 @@ const ICON_PATHS = {
   addcircle: 'circle:12,12,9|M12 8v8M8 12h8',
   scissors: 'circle:6,6,3|circle:6,18,3|M8.1 8.1 20 20M8.1 15.9 20 4',
   aa: 'M4 18 8 6l4 12M5.5 14h5M14 18v-5a2.5 2.5 0 0 1 5 0v5M14 15.5h5',                            // ditto's lock, for the per-layer lock toggle
+  width: 'M4 6v12M20 6v12M4 12h16M8 8l-4 4 4 4M16 8l4 4-4 4',      // frame/canvas width: bars + double arrow
+  height: 'M6 4h12M6 20h12M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4',     // frame/canvas height
+  union: 'fillrect:3,3,12,12,2|fillrect:9,9,12,12,2',
+  subtract: 'fillrect:3,3,12,12,2|rect:9,9,12,12,2',
+  intersect: 'rect:3,3,12,12,2|rect:9,9,12,12,2|fillrect:9,9,6,6,1',
+  exclude: 'rect:3,3,12,12,2|rect:9,9,12,12,2|M9.5 9.5l5 5M14.5 9.5l-5 5',
+  flatten: 'M12 4v11M7 11l5 5 5-5M5 20h14',
+  frame: 'M7 3v18M17 3v18M3 7h18M3 17h18',   // Figma-style frame glyph (Layers panel frame folders)
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',  // Open image (header)
   mask: 'circle:12,12,9|M12 3v18',                                          // half-tone circle: layer mask affordance (canvasmith-only, no reference counterpart)
+  maskoff: 'circle:12,12,9|M12 3v18|M4 20 20 4',                              // the mask glyph struck through: delete a layer's mask (never the × that deletes the layer)
   'align-left': 'M3 2v20|fillrect:6,6,7,4,1|fillrect:6,14,12,4,1',
   'align-h-center': 'M12 2v20|fillrect:8.5,6,7,4,1|fillrect:6,14,12,4,1',
+  'text-left': 'M4 6h16M4 10h10M4 14h16M4 18h10', 'text-center': 'M4 6h16M7 10h10M4 14h16M7 18h10', 'text-right': 'M4 6h16M10 10h10M4 14h16M10 18h10',
   'align-right': 'M21 2v20|fillrect:11,6,7,4,1|fillrect:6,14,12,4,1',
   'align-top': 'M2 3h20|fillrect:6,6,4,7,1|fillrect:14,6,4,12,1',
   'align-v-center': 'M2 12h20|fillrect:6,8.5,4,7,1|fillrect:14,6,4,12,1',
   'align-bottom': 'M2 21h20|fillrect:6,11,4,7,1|fillrect:14,6,4,12,1',
   minus: 'M5 12h14',
   plus: 'M12 5v14M5 12h14',
+  mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3',
   maximize: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
   pen: 'M12 3l7 7-9 9-5 1 1-5 6-6 2 2M11 6l4 4',
   search: 'circle:11,11,7|M21 21l-4.35-4.35',
@@ -212,11 +226,96 @@ function ScrollCue({ within }) {
   );
 }
 
+/* Sticky "jump to section" chips at the top of the properties body: a photo's Adjust / Geometry sections sit
+   about two screens down the panel, so each selected layer gets chips for the sections it actually shows. */
+function PropJump({ show, layerKey }) {
+  const [chips, setChips] = useState([]);
+  useEffect(() => {
+    if (!show) { setChips([]); return undefined; }
+    const raf = requestAnimationFrame(() => {
+      const found = [['Transform', 'cm-sec-transform'], ['Shadow', 'cm-sec-shadow'], ['Adjust', 'cm-sec-adjust'], ['Geometry', 'cm-sec-geometry']].filter(([, id]) => { const e = document.getElementById(id); return e && e.offsetParent !== null; });
+      setChips(found.length >= 3 ? found : []);
+    });
+    return () => cancelAnimationFrame(raf);
+  });
+  if (!chips.length) return null;
+  const go = (id) => document.getElementById(id).scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  return (
+    <nav className="cm-prop-jump" aria-label="Jump to section">
+      {chips.map(([label, id]) => <button key={id} type="button" onClick={() => go(id)}>{label}</button>)}
+    </nav>
+  );
+}
+
+/* Blend & opacity ▸ mode: the shared thumbnail picker (core/blendpicker.js) mounted into a React host. */
+function BlendPicker({ value, onPick, preview }) {
+  const host = useRef(null), api = useRef(null), pick = useRef(onPick), prev = useRef(preview);
+  pick.current = onPick; prev.current = preview;
+  useEffect(() => { api.current = mountBlendPicker(host.current, { get: () => null, preview: () => prev.current && prev.current(), set: (v) => pick.current(v) }); return () => { api.current = null; }; }, []);
+  useEffect(() => { if (api.current) api.current.sync(value); }, [value]);
+  return <div ref={host} />;
+}
+
+/* Adjust ▸ Match color: pull the selected photo's colour balance toward another layer's (Editor#matchColor).
+   Picking a layer applies it at the current amount, "None" clears it, the Amount slider applies on release. */
+function MatchColorRow({ editor, layerId, layers, match }) {
+  const ed = editor();
+  const srcs = ed && layerId ? ed.matchColorSources(layerId) : [];
+  const cur = match && srcs.some(x => x.id === match.ref) ? match.ref : '';
+  const [amt, setAmt] = useState(match ? Math.round((match.amount != null ? match.amount : 1) * 100) : 100);
+  useEffect(() => { setAmt(match ? Math.round((match.amount != null ? match.amount : 1) * 100) : 100); }, [layerId, match && match.amount]);
+  const [err, setErr] = useState('');
+  const apply = (ref, a) => {
+    const r = ref ? ed.matchColor(layerId, ref, { amount: a / 100 }) : ed.matchColor(layerId, null);
+    setErr(r.status === 'error' ? ({ no_pixels: 'Nothing visible to measure', bad_reference: 'Pick a different layer' }[r.reason] || r.reason) : '');
+  };
+  return (
+    <div className="cm-match-row">
+      <div className="cm-adj-row">
+        <Icon name="droplet" size={13} /><span className="lbl">Match color</span>
+        <select className="cm-match-select" aria-label="Match color to layer" value={cur} disabled={!srcs.length} title={srcs.length ? '' : 'Add another photo to match against'}
+          onChange={e => apply(e.target.value, amt)}>
+          <option value="">None</option>
+          {srcs.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+      </div>
+      {!!cur && (
+        <div className="cm-adj-row">
+          <span style={{ width: 13 }} /><span className="lbl">Amount</span>
+          <input type="range" aria-label="Match color amount" min="0" max="100" step="1" value={amt}
+            onChange={e => setAmt(+e.target.value)} onPointerUp={() => apply(cur, amt)} onKeyUp={() => apply(cur, amt)} />
+          <span className="val">{amt}</span>
+        </div>
+      )}
+      {err && <div className="cm-note" role="status">{err}</div>}
+    </div>
+  );
+}
+
 /* Typography font picker (demo #tx-font-btn / renderFontPop): a button showing the current face in
    itself, opening a grouped list where every row previews its font with an "Ag" specimen. */
-function FontPicker({ value, onPick }) {
+const FONT_VIEWS = [['installed', 'My fonts'], ['all', 'All'], ['sans-serif', 'Sans'], ['serif', 'Serif'], ['display', 'Display'], ['monospace', 'Mono']];
+function FontPicker({ value, onPick, onAdded, onError }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [gname, setGname] = useState('');
+  const [view, setView] = useState('installed');   // 'installed' = My fonts, else a Google Fonts catalog slice
+  const [, bump] = useState(0);   // FONT_GROUPS is a mutable registry — re-render after adding to it
+  const fileRef = useRef(null);
+  const add = async (load) => {
+    setBusy(true);
+    try { const css = await load(); bump(n => n + 1); onAdded(css); setGname(''); setView('installed'); setOpen(false); }
+    catch (err) { onError(err.message || 'Could not add that font'); }
+    setBusy(false);
+  };
+  const catalog = view !== 'installed';
+  const hits = catalog ? searchGoogleFonts(gname, view, 50) : [];
+  const hitKey = hits.map(f => f.name).join('|');
+  useEffect(() => { if (hitKey) loadFontPreviews(hitKey.split('|')).then(() => bump(n => n + 1)); }, [hitKey]);
+  const isInstalled = (n) => FONT_GROUPS.some(g => g.fonts.some(([l]) => l.toLowerCase() === n.toLowerCase()));
   const ref = useRef(null);
+  const popRef = useRef(null);
+  useEffect(() => { if (open && popRef.current) popRef.current.scrollIntoView({ block: 'nearest' }); }, [open]);
   useEffect(() => {
     if (!open) return;
     const off = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
@@ -225,24 +324,52 @@ function FontPicker({ value, onPick }) {
   }, [open]);
   let label = value || 'Choose a font…';
   for (const g of FONT_GROUPS) { const f = g.fonts.find(([, v]) => v === value); if (f) { label = f[0]; break; } }
+  const rowKey = (fn) => (e) => { if (e.key === 'Enter') { e.preventDefault(); fn(); } };
   return (
     <div className="cm-font-anchor" ref={ref}>
       <button className="cm-btn" style={{ width: '100%', justifyContent: 'space-between' }} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(o => !o)}>
         <span style={{ fontFamily: value, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span><Icon name="chevronD" size={12} />
       </button>
       {open && (
-        <div className="cm-font-pop" role="listbox">
-          {FONT_GROUPS.map(g => (
-            <React.Fragment key={g.label}>
-              <div className="cm-font-grp-label">{g.label}</div>
-              {g.fonts.map(([l, v]) => (
-                <div key={v} className="cm-font-item" role="option" aria-selected={v === value} data-on={v === value}
-                  onClick={() => { onPick(v); setOpen(false); }}>
-                  <span className="nm" style={{ fontFamily: v }}>{l}</span><span className="ag" style={{ fontFamily: v }}>Ag</span>
-                </div>
+        <div className="cm-font-pop" ref={popRef}>
+          <div className="cm-fp-head">
+            <div className="cm-fp-search">
+              <span className="ico"><Icon name="search" size={14} /></span>
+              <input type="text" value={gname} placeholder="Search Google Fonts" aria-label="Search Google Fonts" spellCheck={false} autoComplete="off" autoFocus={catalog}
+                onChange={e => { setGname(e.target.value); if (e.target.value && !catalog) setView('all'); }}
+                onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' && gname.trim() && !busy) add(() => addGoogleFont(hits[0] ? hits[0].name : gname)); }} />
+              {gname && <button type="button" className="cm-fp-clear" aria-label="Clear search" onClick={() => setGname('')}><Icon name="close" size={11} /></button>}
+            </div>
+            <div className="cm-fp-chips" role="tablist">
+              {FONT_VIEWS.map(([v, l]) => <button key={v} type="button" role="tab" aria-selected={view === v} data-on={view === v} onClick={() => setView(v)}>{l}</button>)}
+            </div>
+          </div>
+          <div className="cm-fp-list" role="listbox">
+            {catalog ? (hits.length ? hits.map(f => (
+              <div key={f.name} className="cm-font-item" role="option" aria-selected={false} tabIndex={0}
+                onClick={() => !busy && add(() => addGoogleFont(f.name))} onKeyDown={rowKey(() => !busy && add(() => addGoogleFont(f.name)))}>
+                <span className="nm" style={{ fontFamily: "'" + f.name + "', " + f.category }}>{f.name}</span>
+                {isInstalled(f.name) ? <span className="tag ok">Added</span> : <span className="tag add">+ Add</span>}
+              </div>
+            )) : <div className="cm-font-empty">No match for “{gname.trim()}”.<br />Press Enter to try that exact name on Google Fonts.</div>)
+              : FONT_GROUPS.map(g => (
+                <React.Fragment key={g.label}>
+                  <div className="cm-font-grp-label">{g.label}</div>
+                  {g.fonts.map(([l, v]) => (
+                    <div key={v} className="cm-font-item" role="option" aria-selected={v === value} data-on={v === value} tabIndex={0}
+                      onClick={() => { onPick(v); setOpen(false); }} onKeyDown={rowKey(() => { onPick(v); setOpen(false); })}>
+                      <span className="nm" style={{ fontFamily: v }}>{l}</span><span className="ag" style={{ fontFamily: v }}>Ag</span>
+                    </div>
+                  ))}
+                </React.Fragment>
               ))}
-            </React.Fragment>
-          ))}
+          </div>
+          <div className="cm-fp-foot">
+            <button type="button" disabled={busy} title="Upload .ttf, .otf, .woff or .woff2" onClick={() => fileRef.current && fileRef.current.click()}><Icon name="plus" size={13} />Upload font file</button>
+            <span>.ttf · .otf · .woff</span>
+            <input ref={fileRef} type="file" accept=".ttf,.otf,.woff,.woff2" hidden
+              onChange={e => { const f = e.target.files[0]; e.target.value = ''; if (f) add(() => addCustomFont(f)); }} />
+          </div>
         </div>
       )}
     </div>
@@ -256,6 +383,59 @@ function Icon({ name, size = 15, style }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}
       dangerouslySetInnerHTML={{ __html: html }} />
+  );
+}
+
+/* Free icon library (core/icons.js → Iconify): debounced search, mask-drawn thumbnails that follow the
+   theme colour, click to add as a recolourable vector layer. */
+function IconLibrary({ getEditor, onError }) {
+  const [q, setQ] = useState('');
+  const [ids, setIds] = useState([]);
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  useEffect(() => {
+    const term = q.trim() || 'star';   // empty box → starter set, never a blank grid
+    let live = true;
+    const t = setTimeout(async () => {
+      setLoading(true); setStatus('Searching\u2026');
+      try { const r = await searchIcons(term); if (!live) return; setIds(r); setStatus(r.length ? r.length + ' icons' : 'No icons found for \u201c' + term + '\u201d \u2014 try another word'); }
+      catch (e) { if (live) { setIds([]); setStatus('Could not reach the icon library \u2014 check your connection.'); } }
+      if (live) setLoading(false);
+    }, q ? 300 : 0);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+  const add = async (id) => {
+    const ed = getEditor(); if (!ed || busyId) return;
+    setBusyId(id);
+    try { await ed.addIcon(id); } catch (e) { onError(e.message || 'Could not add that icon'); }
+    setBusyId('');
+  };
+  return (
+    <div>
+      <div className="cm-icon-search">
+        <span className="ico"><Icon name="search" size={15} /></span>
+        <input className="cm-icon-q" type="text" value={q} placeholder="Search 200,000+ free icons" aria-label="Search icons" spellCheck={false} autoComplete="off"
+          onChange={e => setQ(e.target.value)} onKeyDown={e => e.stopPropagation()} />
+        {q && <button type="button" className="cm-icon-clear" aria-label="Clear search" onClick={() => setQ('')}><Icon name="close" size={12} /></button>}
+      </div>
+      <div className="cm-icon-sugg">
+        {ICON_SUGGESTIONS.map(w => <button key={w} className="cm-chip" data-on={q.trim().toLowerCase() === w} onClick={() => setQ(w)}>{w}</button>)}
+      </div>
+      <div className="cm-icon-meta"><span role="status">{status}</span><span className="cm-icon-credit">Free · Iconify</span></div>
+      <div className="cm-icon-grid">
+        {loading
+          ? Array.from({ length: 20 }, (_, i) => <div key={i} className="cm-icon-skel" />)
+          : ids.map(id => {
+            const nm = id.split(':')[1].replace(/-/g, ' ');
+            return (
+              <button key={id} className="cm-sticker-thumb" title={nm} aria-label={nm} disabled={!!busyId} onClick={() => add(id)}>
+                <span className="cm-icon-glyph" style={{ '--src': "url('" + iconUrl(id) + "')" }} />
+              </button>
+            );
+          })}
+      </div>
+    </div>
   );
 }
 
@@ -298,12 +478,6 @@ const GROUPS = [
   { label: 'Draw', tools: [['rect', 'Rect'], ['ellipse', 'Ellipse'], ['line', 'Line'], ['triangle', 'Triangle'], ['polygon', 'Polygon'], ['star', 'Star'], ['pen', 'Pen'], ['type', 'Text'], ['bucket', 'Fill'], ['gradient', 'Gradient'], ['eyedropper', 'Pick']] },
 ];
 
-const BLEND_MODES = [
-  ['source-over', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'],
-  ['darken', 'Darken'], ['lighten', 'Lighten'], ['color-dodge', 'Dodge'], ['color-burn', 'Burn'],
-  ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'],
-  ['hue', 'Hue'], ['saturation', 'Saturation'], ['color', 'Color'], ['luminosity', 'Luminosity'],
-];
 
 /* Per-tool display names for the rail's tooltips/flyouts and the ⌘K palette — ported verbatim
    from the vanilla demo's TOOL_LABELS so both shells describe each tool identically. */
@@ -337,7 +511,9 @@ const TOOL_HINTS = {
   pen: 'Click for a corner, click-drag for a curve (⌥ breaks the handles, ⇧ snaps to 45°, Space moves the point). Click the first point to close into a filled shape; Enter/Esc keeps an open stroke. ⌫ removes the last point. With a path selected: click its outline to add a point, a point to delete it, an open end to continue.',
   aiinsert: 'AI insert · click a spot to draw there — or make a selection first and click inside it: the AI fills exactly that shape',
   clone: 'Alt-click (⌥) or Shift-click (⇧) to set the source point, then paint elsewhere to stamp those pixels. Click again with either to re-source.',
-  heal: 'Alt-click (⌥) or Shift-click (⇧) to set the source point, then paint over the blemish — the patch is blended into its surroundings.',
+  // a plain stroke heals from the surroundings now (spot heal) — the source point is optional
+  heal: 'Paint over a blemish and it is filled in from its surroundings. To copy from a chosen spot instead, ⌥-click (or ⇧-click) that spot first, then paint.',
+  type: 'Click on the canvas to add text. Double-click any text to edit it.',
 };
 // Inverse of TOOL_KEYS (letter -> tool), so the rail's tooltip/flyout shortcut hint always
 // matches what installKeybindings actually honors — same one-source-of-truth contract as the
@@ -349,7 +525,7 @@ Object.entries(TOOL_KEYS).forEach(([key, id]) => { TOOL_SHORTCUT[id] = key.toUpp
    renders as a plain button, 2+ render as a button (showing whichever sibling is active, or the
    first) plus a caret that opens a hover flyout listing the rest. Ported verbatim from the vanilla
    demo's TOOLGROUPS so both shells group/cycle tools identically. */
-const UI_FONT_URL = 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
+const UI_FONT_URL = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@400;500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap';
 
 // Rail glyph per tool where it differs from the tool id (demo TOOLGROUPS' `icon` field).
 const TOOL_ICON = { aiinsert: 'spark' };
@@ -395,7 +571,7 @@ const EMPTY_PROPS = {
   hasBorder: false, strokeWidth: 0, stroke: '#000000', strokeAlpha: 1, strokeOpts: null, shapeType: '', fillOff: false, strokeOff: false,
   angle: 0, x: '', y: '', w: '', h: '', skewX: 0, skewY: 0, isRect: false, rx: 0,
   shadow: { color: '#000000', blur: 0, offsetX: 0, offsetY: 0 },
-  canGroup: false, canUngroup: false, hasSelectionPixels: false,
+  canGroup: false, canUngroup: false, combine: null, hasSelectionPixels: false, selFeather: 0, canFeather: false, edgeFeather: 0,
 };
 
 /* A solid fill/stroke value as { color: 6-digit hex, alpha: 0..1 } — plain hex, or the rgba() string
@@ -493,19 +669,39 @@ const STROKE_JOINS = [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']
 
 const CANVAS_RATIOS = [['16:9', 1920, 1080, 'Standard'], ['1:1', 1080, 1080, 'Square'], ['9:16', 1080, 1920, 'Story'], ['4:5', 1080, 1350, 'Portrait']];
 
-/* Canvas section (top of Properties, always visible): artboard W×H + aspect presets, and the
+/* Canvas section (top of Properties when nothing is selected): artboard W×H + aspect presets, and the
    page's background fill. Mirrors the demo's #canvas-section. */
-function CanvasSection({ editor, info }) {
+function CanvasSection({ editor, info, frames }) {
   const { W, H, bg } = info;
+  const activeFrame = frames.find(f => f.active) || null;
   const match = CANVAS_RATIOS.find(([, w, h]) => Math.abs(W / H - w / h) < 0.005);
   return (
     <div className="cm-canvas-sec">
       <div className="cm-grp" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>
-        <span>Canvas dimensions</span><span className="aside">{match ? match[0] + ' ' + match[3] : 'Custom'}</span>
+        <span>Frame</span><span className="aside">{frames.length > 1 ? `${frames.findIndex(f => f.active) + 1} of ${frames.length}` : ''}</span>
+      </div>
+      <div className="cm-fr-bar">
+        <label className="cm-fr-field" title="Frame name — rename it here">
+          <span className="cm-fr-field-ico"><Icon name="frame" size={14} /></span>
+          <input key={(activeFrame ? activeFrame.id + ':' + activeFrame.name : 'none')} defaultValue={activeFrame ? activeFrame.name : ''} maxLength={40} spellCheck={false} aria-label="Frame name"
+            onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); else if (e.key === 'Escape') { e.target.value = activeFrame ? activeFrame.name : ''; e.target.blur(); } }}
+            onBlur={(e) => { if (activeFrame) editor().renameFrame(activeFrame.id, e.target.value); }} />
+        </label>
+        <button className="cm-fr-btn cm-frame-add" disabled={frames.length >= 12} aria-label="Add frame" title={frames.length >= 12 ? 'A page holds up to 12 frames' : 'Add a frame to this page'} onClick={() => editor().addFrame()}><Icon name="plus" size={15} /></button>
+        <button className="cm-fr-btn cm-frame-del" disabled={frames.length < 2} aria-label="Delete frame" title="Delete this frame and its layers"
+          onClick={() => {
+            if (!activeFrame) return;
+            const n = editor().layers().filter(l => l.frameId === activeFrame.id).length;
+            if (n && !window.confirm('Delete \u201c' + activeFrame.name + '\u201d and its ' + n + ' layer' + (n === 1 ? '' : 's') + '?')) return;
+            editor().removeFrame(activeFrame.id);
+          }}><Icon name="trash" size={14} /></button>
+      </div>
+      <div className="cm-grp">
+        <span>Frame size</span><span className="aside">{match ? match[0] + ' ' + match[3] : 'Custom'}</span>
       </div>
       <div className="cm-cv-dims">
-        <label className="cm-cv-dim"><span>W</span><CommitNumber value={W} min={1} max={8000} aria-label="Canvas width" onCommit={w => editor().resizeCanvas(w, H)} /><span>px</span></label>
-        <label className="cm-cv-dim"><span>H</span><CommitNumber value={H} min={1} max={8000} aria-label="Canvas height" onCommit={h => editor().resizeCanvas(W, h)} /><span>px</span></label>
+        <label className="cm-cv-dim" title="Width"><span className="cm-cv-dim-ico"><Icon name="width" size={17} /></span><CommitNumber value={W} min={1} max={8000} aria-label="Canvas width" onCommit={w => editor().resizeCanvas(w, H)} /><span>px</span></label>
+        <label className="cm-cv-dim" title="Height"><span className="cm-cv-dim-ico"><Icon name="height" size={17} /></span><CommitNumber value={H} min={1} max={8000} aria-label="Canvas height" onCommit={h => editor().resizeCanvas(W, h)} /><span>px</span></label>
       </div>
       <div className="cm-cv-ratios">
         {CANVAS_RATIOS.map(([label, w, h, desc]) => (
@@ -542,11 +738,11 @@ function CanvasSection({ editor, info }) {
    a pixel selection is very much active, and vice versa). */
 function readProps(ed) {
   const o = ed.fc.getActiveObject();
-  if (!o) return { ...EMPTY_PROPS, hasSelectionPixels: !!ed.selection };
+  if (!o) return { ...EMPTY_PROPS, hasSelectionPixels: !!ed.selection, selFeather: (ed.selection && ed.selection.feather) || 0 };
   const isImage = o.type === 'image';
   const isAdjustment = o.role === 'adjustment';
   const fillTarget = o.type === 'activeSelection' ? o.getObjects()[0] : o;
-  const solidFill = fillTarget ? solidColor(fillTarget.fill) : null;
+  const solidFill = fillTarget ? solidColor(ed.textSelectionFill() || fillTarget.fill) : null;
   const shapeGradient = ed.getShapeGradient();
   const hasFill = !!fillTarget && !isImage && fillTarget.type !== 'line' && fillTarget.role !== 'paint' && (solidFill || !!shapeGradient);
   const fill = solidFill ? solidFill.color : '#ef6a2d';
@@ -559,7 +755,8 @@ function readProps(ed) {
   const strokeAlpha = solidStroke ? solidStroke.alpha : 1;
   return {
     active: true,
-    title: o.type === 'activeSelection' ? (o._objects ? o._objects.length + ' layers' : 'Selection') : (ed.layers().find(l => l.active)?.name || o.type || 'Layer'),
+    title: o.type === 'activeSelection' ? (o._objects ? o._objects.length + ' layers' : 'Selection') : (ed.layers().find(l => l.active)?.name || layerLabel(o)),
+    iso: ed.isolationParent ? ed.isolationParent() : null,   // inside a sticker/group: the fields act on one part
     isImage, isAdjustment,
     typeLabel: layerTypeLabel(o), locked: !!o.locked,
     fx: isAdjustment ? ed.getAdjustmentParams(o.id) : isImage ? ed.getImageFilters() : EMPTY_PROPS.fx,
@@ -573,11 +770,14 @@ function readProps(ed) {
     blend: o.globalCompositeOperation || 'source-over',
     opacity: o.opacity != null ? o.opacity : 1,
     angle: Math.round(o.angle || 0),
-    x: Math.round(o.left || 0), y: Math.round(o.top || 0),
+    // top-left of the box whatever the origin (a centre-origin sticker showed its centre)
+    ...(() => { const p = ed.panelPosition ? ed.panelPosition(o) : { x: o.left || 0, y: o.top || 0 }; return { x: Math.round(p.x), y: Math.round(p.y) }; })(),
     w: Math.round(o.getScaledWidth ? o.getScaledWidth() : (o.width || 0)),
     h: Math.round(o.getScaledHeight ? o.getScaledHeight() : (o.height || 0)),
     skewX: Math.round(o.skewX || 0), skewY: Math.round(o.skewY || 0),
-    isRect: o.type === 'rect', rx: Math.round(ed.cornerRadiusOf(o)),   // true on-screen radius, not the scale-divided local rx
+    // rectangles, and images (rounded photo cards) not already clipped some other way
+    canFeather: o.type === 'image' || o.role === 'paint', edgeFeather: o.edgeFeather || 0,
+    isRect: o.type === 'rect' || (o.type === 'image' && !(o.clipPath && o.clipPath.role !== 'corner')), rx: Math.round(ed.cornerRadiusOf(o)),   // true on-screen radius, not the scale-divided local rx
     shadow: {
       color: (o.shadow && o.shadow.color) || '#000000',
       blur: (o.shadow && o.shadow.blur) || 0,
@@ -586,15 +786,42 @@ function readProps(ed) {
     },
     canGroup: o.type === 'activeSelection',
     canUngroup: o.type === 'group',
-    hasSelectionPixels: !!ed.selection,
+    combine: ed.combineInfo(),
+    hasSelectionPixels: !!ed.selection, selFeather: (ed.selection && ed.selection.feather) || 0,
   };
+}
+
+/* Keeps a collapsing panel's content mounted until its width transition has finished; expanding
+   mounts it at once. Without this the panel empties on the first frame and the slide animates an
+   empty box. */
+function useLinger(hidden, ms) {
+  const [on, setOn] = useState(!hidden);
+  useEffect(() => {
+    if (!hidden) { setOn(true); return undefined; }
+    const t = setTimeout(() => setOn(false), ms);
+    return () => clearTimeout(t);
+  }, [hidden, ms]);
+  return !hidden || on;
 }
 
 const THEMES = {
   // Same palette as the vanilla demo's :root tokens — neutral graphite surfaces, blue accent.
-  dark: { bg: '#1e1e1e', panel: '#262626', line: 'rgba(255,255,255,.10)', ink: '#e8e8e6', dim: '#c3c3c0', accent: '#4f8ff0', accentInk: '#fff', stage: '#1a1a1a' },
-  light: { bg: '#ece6d9', panel: '#faf7f0', line: 'rgba(30,26,18,.11)', ink: '#26221c', dim: '#5e594f', accent: '#2f6fdb', accentInk: '#fff', stage: '#e4ddcc' },
+  // (the visual refresh: neutral zinc greys, standard blue — keep in step with the CSS token block)
+  dark: { bg: '#141416', panel: '#1b1b1e', line: 'rgba(255,255,255,.08)', ink: '#ececee', dim: '#a1a1aa', accent: '#3b82f6', accentInk: '#fff', stage: '#111113' },
+  light: { bg: '#f4f4f5', panel: '#ffffff', line: 'rgba(9,9,11,.09)', ink: '#18181b', dim: '#52525b', accent: '#2563eb', accentInk: '#fff', stage: '#e8e8eb' },
 };
+
+/* The `theme` prop is either flat ({ accent: '#…' }, applied in both modes — the original contract)
+   or per-mode ({ light: {…}, dark: {…} }, optionally mixed with flat keys). Any --cm-* token can be
+   named, with or without the prefix's dash style: 'panel-2', 'dim-2', 'line-soft', 'accent-ink'… */
+function resolveTheme(mode, theme) {
+  const { light, dark, ...flat } = theme || {};
+  const base = THEMES[mode] || THEMES.dark;
+  const per = (mode === 'light' ? light : dark) || {};
+  const vars = { ...base, 'accent-ink': base.accentInk, ...flat, ...per };
+  delete vars.accentInk;
+  return vars;
+}
 
 const CSS = `
 /* Theme tokens: dark is the default/fallback (also applied explicitly via [data-cm-mode=dark] so
@@ -615,7 +842,7 @@ const CSS = `
   --cm-shadow-sm:0 1px 2px rgba(40,34,22,.06); --cm-shadow-md:0 8px 22px rgba(40,34,22,.08);
 }
 .cm-root{
-  display:grid;grid-template-columns:56px 290px 1fr 322px;grid-template-rows:48px 1fr;height:100%;min-height:480px;
+  display:grid;grid-template-columns:56px 290px 1fr 322px;grid-template-rows:48px 1fr;height:100%;min-height:480px;transition:grid-template-columns .18s cubic-bezier(.4,0,.2,1);
   background:var(--cm-bg);color:var(--cm-ink);font:13px/1.45 "Hanken Grotesk",system-ui,sans-serif;position:relative}
 .cm-root[data-left-collapsed=true]{grid-template-columns:56px 0px 1fr 322px}
 .cm-root[data-side-collapsed=true]{grid-template-columns:56px 290px 1fr 0px}
@@ -625,7 +852,7 @@ const CSS = `
 .cm-rail-group{position:relative}
 .cm-rail-btn{all:unset;box-sizing:border-box;cursor:pointer;width:40px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;position:relative;color:var(--cm-dim);transition:background .12s}
 .cm-rail-btn:hover{background:var(--cm-bg);color:var(--cm-ink)}
-.cm-rail-btn[data-on=true]{background:var(--cm-accent);color:var(--cm-accent-ink)}
+.cm-rail-btn[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink)}
 /* "This slot holds more tools" marker — was so low-contrast that 8 of 15 rail slots read as
    single-tool buttons and their alternates were undiscoverable. Brighter, and stronger on
    hover so the cue lands while the pointer is on it. */
@@ -637,7 +864,7 @@ const CSS = `
 .cm-export-scale{display:flex;gap:3px}
 .cm-export-scale-btn{all:unset;box-sizing:border-box;cursor:pointer;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;color:var(--cm-dim);border:1px solid var(--cm-line)}
 .cm-export-scale-btn:hover{color:var(--cm-ink);border-color:var(--cm-dim-2)}
-.cm-export-scale-btn[data-on=true]{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent)}
+.cm-export-scale-btn[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent)}
 .cm-export-dims{padding:0 10px 7px;font-size:10.5px;color:var(--cm-dim-2);font-variant-numeric:tabular-nums}
 .cm-export-sep{height:1px;background:var(--cm-line);margin:5px 0}
 .cm-export-hint{margin-left:auto;padding-left:10px;font-size:9.5px;color:var(--cm-dim-2);font-weight:500;white-space:nowrap}
@@ -658,6 +885,21 @@ const CSS = `
 .cm-rail-tip{position:fixed;z-index:70;background:var(--cm-ink);color:var(--cm-panel);font-size:11.5px;font-weight:600;padding:5px 9px;border-radius:6px;pointer-events:none;white-space:nowrap;transform:translateY(-50%);box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .cm-rail-bottom{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:8px;padding-top:8px;border-top:1px solid var(--cm-line)}
 .cm-stage{position:relative;overflow:hidden;display:grid;place-items:center;background:var(--cm-stage)}
+.cm-center{display:flex;flex-direction:column;min-width:0;min-height:0}
+.cm-center>.cm-stage{flex:1;min-height:0}
+.cm-tabbar{flex:none;display:flex;align-items:flex-end;gap:2px;height:42px;padding:0 10px;background:var(--cm-panel);border-bottom:1px solid var(--cm-line);overflow-x:auto;scrollbar-width:none;position:relative;z-index:10}
+.cm-tabbar::-webkit-scrollbar{display:none}
+.cm-doctab{flex:none;display:flex;align-items:center;gap:6px;max-width:200px;height:34px;margin-bottom:-1px;padding:0 6px 0 12px;border:1px solid transparent;border-bottom:none;border-radius:3px 3px 0 0;background:transparent;color:var(--cm-dim-2);font-size:12px;font-weight:500;cursor:pointer;user-select:none}
+.cm-doctab:hover{color:var(--cm-ink);background:var(--cm-ctl)}
+.cm-doctab[data-on=true]{background:var(--cm-stage);color:var(--cm-ink);border-color:var(--cm-line);box-shadow:inset 0 2px 0 var(--cm-accent)}
+.cm-dt-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-dt-x{all:unset;display:grid;place-items:center;width:18px;height:18px;border-radius:5px;color:var(--cm-dim-2);cursor:pointer}
+.cm-dt-x:hover{background:var(--cm-line);color:var(--cm-ink)}
+.cm-doctab input{all:unset;width:110px;font-size:12px;color:var(--cm-ink);border-bottom:1px solid var(--cm-accent)}
+.cm-doctab-add{all:unset;box-sizing:border-box;flex:none;display:grid;place-items:center;width:28px;height:28px;margin:0 0 5px 4px;border-radius:7px;color:var(--cm-dim-2);cursor:pointer}
+.cm-doctab-add:disabled{opacity:.35;cursor:not-allowed}
+.cm-doctab-add:disabled:hover{background:none;color:var(--cm-dim-2)}
+.cm-doctab-add:hover{color:var(--cm-ink);background:var(--cm-ctl)}
 .cm-left{border-right:1px solid var(--cm-line);background:var(--cm-panel);overflow:hidden;padding:0;transition:padding .15s;display:flex;flex-direction:column;min-height:0}
 /* left panel: Layers / AI Vision tabs, toolbar, list, contextual tool dock, pinned AI card —
    same structure and behaviour as the vanilla demo's #left-panel */
@@ -698,7 +940,7 @@ const CSS = `
 .cm-lp-status::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7}
 .cm-lp-status[data-on=true]{color:var(--cm-accent);background:color-mix(in srgb,var(--cm-accent) 14%,transparent)}
 .cm-lp-status[data-on=true]::before{opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 25%,transparent)}
-.cm-lp-card .cm-ai-detect-btn{margin-top:10px;background:var(--cm-accent);border-color:var(--cm-accent);color:var(--cm-accent-ink)}
+.cm-lp-card .cm-ai-detect-btn{margin-top:10px;background:var(--cm-accent-fill,var(--cm-accent));border-color:var(--cm-accent);color:var(--cm-accent-ink)}
 .cm-lp-card .cm-ai-detect-btn svg{color:var(--cm-accent-ink)}
 .cm-lp-card .cm-ai-detect-btn:hover{background:var(--cm-accent);filter:brightness(1.08)}
 .cm-lp-card .cm-ai-detect-btn[data-busy=true],.cm-lp-card-row .cm-btn[data-busy=true]{opacity:.8;pointer-events:none}
@@ -708,7 +950,13 @@ const CSS = `
 .cm-lp-engine{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--cm-ink);margin-top:6px}
 .cm-btn-spin{width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:cm-spin .7s linear infinite;flex:none}
 @keyframes cm-spin{to{transform:rotate(360deg)}}
-.cm-root[data-left-collapsed=true] .cm-left{padding:0;width:0;border:0}
+.cm-left{transition:padding .18s cubic-bezier(.4,0,.2,1),border-right-width .18s cubic-bezier(.4,0,.2,1)}
+.cm-side{transition:padding .18s cubic-bezier(.4,0,.2,1),border-left-width .18s cubic-bezier(.4,0,.2,1)}
+/* Content is held at full width so the collapsing edge clips it instead of reflowing it. */
+.cm-left>*{min-width:289px}
+.cm-side>*{min-width:293px}
+.cm-side>.cm-side-body{min-width:321px}
+.cm-root[data-left-collapsed=true] .cm-left{padding:0;border-right-width:0}
 .cm-side{border-left:1px solid var(--cm-line);background:var(--cm-panel);overflow:hidden;padding:14px;transition:padding .15s;display:flex;flex-direction:column;min-height:0;position:relative}
 .cm-side-body{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;margin:0 -14px;padding:0 14px}
 .cm-left{position:relative}
@@ -718,7 +966,7 @@ const CSS = `
 .cm-scroll-cue[data-show=true]{opacity:1;pointer-events:auto}
 .cm-scroll-cue svg{color:var(--cm-dim-2);animation:cm-cue-bob 1.4s ease-in-out infinite}
 @keyframes cm-cue-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}
-.cm-root[data-side-collapsed=true] .cm-side{padding:0;width:0;border:0}
+.cm-root[data-side-collapsed=true] .cm-side{padding:0;border-left-width:0}
 .cm-left h4, .cm-side h4{margin:8px 0 6px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--cm-dim)}
 .cm-tabs{display:flex;align-items:stretch;gap:4px;margin:-14px -14px 14px;padding:0 10px;border-bottom:1px solid var(--cm-line-soft);flex:none}
 /* Text tabs on one row: accent underline on the active one, a small accent dot on AI. No "color"
@@ -731,7 +979,7 @@ const CSS = `
 .cm-collapse-left,.cm-collapse{position:absolute;top:calc(50% + 24px);transform:translateY(-50%);width:20px;height:60px;padding:0;
   border:1px solid var(--cm-line);background:var(--cm-panel-2);color:var(--cm-dim-2);cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2;
   transition:left .18s cubic-bezier(.4,0,.2,1),right .18s cubic-bezier(.4,0,.2,1),border-color .12s,background .12s,width .12s}
-.cm-collapse-left:hover,.cm-collapse:hover{color:var(--cm-accent-ink);border-color:var(--cm-accent);background:var(--cm-accent);width:22px}
+.cm-collapse-left:hover,.cm-collapse:hover{color:var(--cm-accent-ink);border-color:var(--cm-accent);background:var(--cm-accent-fill,var(--cm-accent));width:22px}
 .cm-collapse-left{left:346px;border-radius:0 8px 8px 0;border-left:none}
 .cm-root[data-left-collapsed=true] .cm-collapse-left{left:56px}
 .cm-collapse{right:322px;border-radius:8px 0 0 8px;border-right:none}
@@ -748,7 +996,7 @@ const CSS = `
 .cm-check-row{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px}
 .cm-check-item{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;font-weight:500;color:var(--cm-ink)}
 .cm-check-item .box{flex-shrink:0;width:14px;height:14px;border-radius:4px;border:1px solid var(--cm-dim-2);display:flex;align-items:center;justify-content:center;color:transparent;transition:background .12s,border-color .12s}
-.cm-check-item[data-on=true] .box{background:var(--cm-accent);border-color:var(--cm-accent);color:var(--cm-accent-ink)}
+.cm-check-item[data-on=true] .box{background:var(--cm-accent-fill,var(--cm-accent));border-color:var(--cm-accent);color:var(--cm-accent-ink)}
 .cm-check-item:hover .box{border-color:var(--cm-accent)}
 /* AI Vision Engine action: an accent-bordered, subtly glowing button so it reads as the "hero"
    action of its card rather than a plain .cm-btn */
@@ -771,7 +1019,9 @@ const CSS = `
 .cm-layer:hover{background:var(--cm-bg)}
 .cm-layer[data-on=true]{background:color-mix(in srgb,var(--cm-accent) 12%,var(--cm-bg));border-color:color-mix(in srgb,var(--cm-accent) 55%,transparent)}
 .cm-layer[data-visible=false] .cm-layer-thumb,.cm-layer[data-visible=false] .cm-layer-meta{opacity:.4}
-.cm-layer[data-dragover=true]{background:color-mix(in srgb,var(--cm-accent) 16%,var(--cm-panel));border-color:var(--cm-accent);border-style:dashed}
+.cm-layer[data-dragover=true]{background:color-mix(in srgb,var(--cm-accent) 10%,var(--cm-panel))}
+.cm-layer[data-dragover=true][data-drop=above]{box-shadow:inset 0 2px 0 var(--cm-accent)}
+.cm-layer[data-dragover=true][data-drop=below]{box-shadow:inset 0 -2px 0 var(--cm-accent)}
 .cm-layer[data-dragging=true]{opacity:.4}
 .cm-lr-toggles{display:flex;flex:none}
 .cm-lr-fold{all:unset;box-sizing:border-box;cursor:pointer;flex:none;width:16px;height:22px;margin:0 -5px 0 -3px;display:flex;align-items:center;justify-content:center;border-radius:5px;color:var(--cm-dim)}
@@ -779,6 +1029,19 @@ const CSS = `
 .cm-lr-fold svg{transition:transform .12s}
 .cm-layer[aria-expanded=false] .cm-lr-fold svg{transform:rotate(-90deg)}
 .cm-layer-children{margin-left:16px;padding-left:4px;border-left:1px solid var(--cm-line)}
+.cm-frame-head{display:flex;align-items:center;gap:6px;height:30px;margin:6px 0 2px;padding:0 8px 0 4px;border-radius:7px;cursor:pointer;color:var(--cm-dim-2);font-size:12px;font-weight:600}
+.cm-frame-head:first-child{margin-top:0}
+.cm-frame-head:hover{background:var(--cm-ctl);color:var(--cm-ink)}
+.cm-frame-head[data-on=true]{color:var(--cm-ink);background:color-mix(in srgb,var(--cm-accent) 16%,transparent)}
+.cm-frame-head[data-on=true] .cm-fh-ico,.cm-frame-head[data-on=true] .cm-fh-count{color:var(--cm-accent)}
+.cm-frame-head[data-on=true]:hover{background:color-mix(in srgb,var(--cm-accent) 20%,transparent)}
+.cm-fh-fold{all:unset;display:grid;place-items:center;width:18px;height:18px;border-radius:5px;cursor:pointer;color:var(--cm-dim-2)}
+.cm-fh-fold[data-open=false] svg{transform:rotate(-90deg)}
+.cm-fh-ico{display:grid;place-items:center;color:var(--cm-dim-2)}
+.cm-fh-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-fh-count{font-size:10.5px;font-weight:500;color:var(--cm-dim-2);font-variant-numeric:tabular-nums}
+.cm-frame-layers{margin-left:11px;padding-left:4px;border-left:1px solid var(--cm-line)}
+.cm-frame-empty{padding:6px 10px 8px;font-size:11.5px;color:var(--cm-dim-2)}
 .cm-layer[data-child=true]{padding-top:5px;padding-bottom:5px}
 .cm-layer[data-child=true] .cm-layer-thumb{width:28px;height:28px;border-radius:7px}
 .cm-layer .cm-eye{all:unset;box-sizing:border-box;cursor:pointer;width:20px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:5px;color:var(--cm-dim-2)}
@@ -804,7 +1067,7 @@ const CSS = `
 .cm-asset-thumb span{display:block;font-size:10px;color:var(--cm-dim);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cm-asset-thumb:hover img{border-color:var(--cm-dim)}
 .cm-btn{all:unset;box-sizing:border-box;cursor:pointer;padding:8px 12px;border-radius:9px;border:1px solid var(--cm-line);font-size:13px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:7px;color:var(--cm-ink)}
-.cm-btn[data-on=true]{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent)}
+.cm-btn[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent)}
 /* colour inputs everywhere: the demo's 27x26 rounded swatch, not the browser's wide default */
 .cm-root input[type=color]{width:27px;height:26px;border:none;background:none;border-radius:7px;overflow:hidden;cursor:pointer;padding:0}
 .cm-root input[type=color]::-webkit-color-swatch-wrapper{padding:0}
@@ -812,8 +1075,9 @@ const CSS = `
 .cm-btn:hover{border-color:var(--cm-dim-2);background:var(--cm-panel-2)}.cm-btn[data-on=true]:hover{background:var(--cm-accent)}.cm-btn:disabled{opacity:.4;cursor:default}
 .cm-icon-btn{all:unset;cursor:pointer;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:7px;border:1px solid var(--cm-line);color:var(--cm-ink)}
 .cm-icon-btn:hover{border-color:var(--cm-accent)}
-.cm-icon-btn[data-active=true]{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent)}
+.cm-icon-btn[data-active=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent)}
 .cm-top input[type=range]{width:90px}.cm-top input[type=color]{width:26px;height:26px;border:none;background:none;cursor:pointer}
+.cm-voice-on{background:var(--cm-accent,#d4ff45)!important;color:#111!important}.cm-voice-cap{position:absolute;bottom:56px;right:16px;z-index:15;max-width:280px;padding:6px 12px;border-radius:10px;font-size:12px;background:var(--cm-bg);border:1px solid var(--cm-line);box-shadow:0 8px 24px rgba(0,0,0,.35);color:var(--cm-ink,inherit)}.cm-voice-cap.err{color:#ff6b6b}
 /* Lives in the header now, so it is an inline control rather than a floating overlay: no
    absolute position and no drop shadow. Moving it also frees the canvas's bottom-right corner,
    which it used to sit on top of. */
@@ -848,21 +1112,24 @@ const CSS = `
 .cm-compare-header{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 28px;flex:none}
 .cm-compare-header strong{font-size:16px;color:var(--cm-ink)}
 .cm-compare-header p{font-size:13px;color:var(--cm-dim);margin:4px 0 0}
-.cm-compare-panes{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:0 28px 28px;min-height:0}
-.cm-compare-pane{position:relative;display:grid;place-items:center;background:var(--cm-stage);border:1px solid var(--cm-line);border-radius:12px;overflow:hidden;min-height:0}
+.cm-compare-panes{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:minmax(0,1fr);gap:20px;padding:0 28px 28px;min-height:0}
+.cm-compare-pane{position:relative;display:flex;align-items:center;justify-content:center;padding:16px;background:var(--cm-stage);border:1px solid var(--cm-line);border-radius:12px;overflow:hidden;min-height:0}
 .cm-compare-pane img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px}
 .cm-compare-label{position:absolute;top:14px;left:14px;background:var(--cm-panel);border:1px solid var(--cm-line);border-radius:999px;padding:4px 11px;font-size:11px;font-weight:600;color:var(--cm-dim)}
-@media (max-width:640px){.cm-compare-panes{grid-template-columns:1fr;overflow-y:auto}}
-.cm-extend-banner{all:unset;position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:16;display:flex;align-items:center;gap:7px;background:var(--cm-accent);color:var(--cm-accent-ink);border-radius:999px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+@media (max-width:640px){.cm-compare-panes{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}}
+.cm-extend-banner{all:unset;position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:16;display:flex;align-items:center;gap:7px;background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-radius:999px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35)}
 .cm-extend-banner:hover{filter:brightness(1.06)}
 .cm-persp-bar{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:17;display:flex;align-items:center;gap:8px;background:var(--cm-panel);border:1px solid var(--cm-line);border-radius:12px;padding:8px 10px 8px 14px;font-size:12px;color:var(--cm-dim);box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:calc(100% - 32px)}
 .cm-persp-bar .cm-btn{flex:0 0 auto}
-.cm-persp-bar .cm-persp-apply{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent)}
+.cm-persp-bar .cm-persp-apply{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent)}
 @media (max-width:900px){.cm-path-bar .cm-path-bar-hint{display:none}}
 .cm-ai{display:flex;gap:6px;margin-top:6px}.cm-ai input{flex:1;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:7px;color:var(--cm-ink);padding:5px 8px;font-size:12px}
 .cm-note{font-size:11px;color:var(--cm-dim);margin-top:6px;line-height:1.5}
 /* Autosave readout — quiet when things are fine, amber when the document is too big to save (or
    storage is blocked), since that's the only case the user has to act on. */
+.cm-iso-bar{display:flex;align-items:center;gap:8px;margin:-4px 0 10px;padding:7px 10px;border:1px solid var(--cm-line);border-radius:8px;font-size:11.5px;color:var(--cm-dim)}
+.cm-iso-bar span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-iso-bar b{color:var(--cm-ink)}
 .cm-props-title{font-family:"Bricolage Grotesque",inherit,sans-serif;font-size:15px;font-weight:600}
 .cm-side-body .cm-field input,.cm-side-body .cm-select{border-radius:6px;height:34px;padding:0 10px}
 .cm-side-body .cm-select{padding-right:34px}
@@ -878,18 +1145,44 @@ const CSS = `
 .cm-seg{display:flex;gap:4px;padding:4px;border-radius:6px;border:1px solid var(--cm-line-soft);background:var(--cm-bg)}
 .cm-seg .cm-btn{flex:1;padding:6px 8px;border:none;border-radius:4px;background:none;color:var(--cm-dim);font-weight:500}
 .cm-seg .cm-btn:hover{background:none;color:var(--cm-ink)}
-.cm-seg .cm-btn[data-on=true],.cm-seg .cm-btn[data-on=true]:hover{background:var(--cm-accent);color:var(--cm-accent-ink);font-weight:600}
+.cm-seg .cm-btn[data-on=true],.cm-seg .cm-btn[data-on=true]:hover{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);font-weight:600}
 .cm-props-footer{flex:none;display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 -14px -14px;padding:11px 14px;border-top:1px solid var(--cm-line);background:var(--cm-panel);font-size:11.5px;color:var(--cm-dim)}
 .cm-props-footer b{font-weight:600;color:var(--cm-ink)}
 .cm-props-footer b[data-locked=false]{color:var(--cm-ai-green)}
 .cm-props-footer b[data-locked=true]{color:#f5a524}
 .cm-font-anchor{position:relative}
-.cm-font-pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:60;max-height:280px;overflow-y:auto;padding:6px;background:var(--cm-panel-2);border:1px solid var(--cm-line);border-radius:12px;box-shadow:var(--cm-shadow-md)}
+.cm-font-pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:60;max-height:430px;display:flex;flex-direction:column;padding:0;background:var(--cm-panel-2);border:1px solid var(--cm-line);border-radius:12px;box-shadow:var(--cm-shadow-md);overflow:hidden}
 .cm-font-grp-label{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--cm-dim-2);padding:8px 8px 4px}
 .cm-font-grp-label:first-child{padding-top:2px}
 .cm-font-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 9px;border-radius:7px;cursor:pointer;font-size:14px;color:var(--cm-ink)}
 .cm-font-item:hover,.cm-font-item[data-on=true]{background:var(--cm-bg)}
 .cm-font-item .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-font-item .tag{flex:none;font-size:10px;color:var(--cm-dim-2);letter-spacing:.04em;text-transform:uppercase}
+.cm-font-empty{padding:18px 14px;font-size:12px;color:var(--cm-dim);text-align:center;line-height:1.5}
+.cm-font-item{margin:0 6px}
+.cm-font-grp-label{padding:10px 14px 4px}
+.cm-font-item .tag{display:flex;align-items:center;gap:4px;font-size:11px;letter-spacing:0;text-transform:none}
+.cm-font-item .tag.add{color:var(--cm-accent);opacity:0;font-weight:600}
+.cm-font-item:hover .tag.add,.cm-font-item:focus-visible .tag.add{opacity:1}
+.cm-font-item .tag.ok{color:var(--cm-dim)}
+.cm-fp-head{flex:none;padding:10px 10px 6px;border-bottom:1px solid var(--cm-line)}
+.cm-fp-search{position:relative;margin-bottom:8px}
+.cm-fp-search .ico{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--cm-dim-2);display:flex;pointer-events:none}
+.cm-font-pop .cm-fp-search input[type=text]{width:100%;box-sizing:border-box;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:8px;padding:8px 30px 8px 32px;font-size:12.5px;color:var(--cm-ink);outline:none}
+.cm-font-pop .cm-fp-search input[type=text]:focus{border-color:var(--cm-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 22%,transparent)}
+.cm-fp-search input::placeholder{color:var(--cm-dim-2)}
+.cm-fp-clear{all:unset;position:absolute;right:6px;top:50%;transform:translateY(-50%);width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;color:var(--cm-dim)}
+.cm-fp-clear:hover{background:var(--cm-panel-2);color:var(--cm-ink)}
+.cm-fp-chips{display:flex;gap:4px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+.cm-fp-chips::-webkit-scrollbar{display:none}
+.cm-fp-chips button{all:unset;flex:none;cursor:pointer;padding:4px 10px;border-radius:6px;font-size:11.5px;font-weight:500;color:var(--cm-dim)}
+.cm-fp-chips button:hover{color:var(--cm-ink);background:var(--cm-bg)}
+.cm-fp-chips button[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);font-weight:600}
+.cm-fp-list{overflow-y:auto;flex:1;min-height:140px;padding:6px 0}
+.cm-fp-foot{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-top:1px solid var(--cm-line);font-size:10.5px;color:var(--cm-dim-2)}
+.cm-fp-foot button{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--cm-ink);padding:4px 6px;margin:-4px -6px;border-radius:6px}
+.cm-fp-foot button:hover{background:var(--cm-bg)}
+.cm-fp-foot button[disabled]{opacity:.5;pointer-events:none}
 .cm-font-item .ag{flex:none;font-size:13px;color:var(--cm-dim-2)}
 .cm-hdiv{width:1px;height:20px;background:var(--cm-line);flex:none}
 .cm-top > strong{font-family:"Bricolage Grotesque",inherit,sans-serif;font-size:14px!important;font-weight:700;letter-spacing:-.02em;flex:none}
@@ -946,7 +1239,7 @@ const CSS = `
 .cm-aix-convert-head p{margin:4px 0 0;font-size:12px;line-height:1.5;color:var(--cm-dim)}
 .cm-aix-guided{flex:none;padding:3px 7px;border-radius:6px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:10.5px;color:var(--cm-ai-teal);border:1px solid color-mix(in srgb,#14b8a6 40%,transparent);background:color-mix(in srgb,#14b8a6 10%,transparent)}
 .cm-aix-primary,.cm-aix-secondary{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:10px 12px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer}
-.cm-aix-primary{margin-top:16px;background:var(--cm-accent);color:var(--cm-accent-ink)}
+.cm-aix-primary{margin-top:16px;background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink)}
 .cm-aix-primary:hover{filter:brightness(1.07)}
 .cm-aix-secondary{margin-top:8px;border:1px solid var(--cm-line);background:var(--cm-bg);color:var(--cm-ink);font-weight:500}
 .cm-aix-secondary:hover{border-color:var(--cm-dim-2)}
@@ -960,11 +1253,31 @@ const CSS = `
 .cm-sticker-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .cm-sticker-thumb{all:unset;box-sizing:border-box;cursor:pointer;aspect-ratio:1;border-radius:9px;border:1px solid var(--cm-line);background:var(--cm-bg);display:flex;align-items:center;justify-content:center;padding:10px;color:var(--cm-dim);transition:border-color .1s,background .1s}
 .cm-sticker-thumb:hover{border-color:var(--cm-dim-2);background:var(--cm-panel-2)}
+.cm-icon-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
+.cm-icon-grid .cm-sticker-thumb{padding:9px;border-color:transparent;background:var(--cm-ctl,var(--cm-bg));border-radius:8px}
+.cm-icon-grid .cm-sticker-thumb:hover{border-color:var(--cm-accent);background:var(--cm-panel-2)}
+.cm-icon-skel{aspect-ratio:1;border-radius:8px;background:linear-gradient(100deg,var(--cm-bg) 30%,var(--cm-panel-2) 50%,var(--cm-bg) 70%);background-size:300% 100%;animation:cm-icon-shimmer 1.1s linear infinite}
+@keyframes cm-icon-shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
+.cm-icon-search{position:relative;margin-bottom:10px}
+.cm-icon-search .ico{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--cm-dim-2);display:flex;pointer-events:none}
+.cm-icon-q{width:100%;box-sizing:border-box;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:9px;padding:10px 34px;font-size:13px;color:var(--cm-ink);outline:none}
+.cm-icon-q:focus{border-color:var(--cm-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 22%,transparent)}
+.cm-icon-q::placeholder{color:var(--cm-dim-2)}
+.cm-icon-clear{all:unset;position:absolute;right:7px;top:50%;transform:translateY(-50%);width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;color:var(--cm-dim)}
+.cm-icon-clear:hover{background:var(--cm-panel-2);color:var(--cm-ink)}
+.cm-icon-sugg{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px;scrollbar-width:none;-webkit-mask:linear-gradient(90deg,#000 88%,transparent);mask:linear-gradient(90deg,#000 88%,transparent)}
+.cm-icon-sugg::-webkit-scrollbar{display:none}
+.cm-icon-sugg .cm-chip{flex:none;text-transform:capitalize}
+.cm-icon-meta{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;color:var(--cm-dim);margin-bottom:8px;min-height:16px}
+.cm-icon-credit{color:var(--cm-dim-2);font-size:10.5px}
+.cm-icon-glyph{display:block;width:100%;height:100%;background:var(--cm-dim);-webkit-mask:var(--src) center/contain no-repeat;mask:var(--src) center/contain no-repeat}
+.cm-sticker-thumb:hover .cm-icon-glyph{background:var(--cm-ink)}
+.cm-sticker-thumb[disabled]{opacity:.5;pointer-events:none}
 .cm-sticker-thumb svg{width:100%;height:100%}
 .cm-ai-card-title{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:700;color:var(--cm-ink)}
 .cm-ai-card p{margin:8px 0 0;font-size:12px;color:var(--cm-dim);line-height:1.55}
 .cm-ai-textarea{width:100%;box-sizing:border-box;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:12px;color:var(--cm-ink);padding:10px 12px;font-size:13px;font-family:inherit;resize:vertical}
-.cm-btn-accent{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent)}
+.cm-btn-accent{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent)}
 .cm-btn-accent:hover{opacity:.92;border-color:var(--cm-accent)}
 .cm-key-hint{margin-left:6px;padding:1px 6px;border-radius:5px;font-size:10.5px;font-weight:600;background:color-mix(in srgb,var(--cm-accent-ink) 18%,transparent);opacity:.85}
 .cm-btn-spin{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.6px solid color-mix(in srgb,var(--cm-accent-ink) 35%,transparent);border-top-color:var(--cm-accent-ink);animation:cm-btn-spin .6s linear infinite;flex:none}
@@ -972,9 +1285,9 @@ const CSS = `
 .cm-ai-suggestions{display:flex;flex-direction:column;gap:6px}
 .cm-chip{all:unset;box-sizing:border-box;cursor:pointer;display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border-radius:4px;border:1px solid var(--cm-line);font-size:11.5px;font-weight:600;color:var(--cm-ink);transition:border-color .1s,background .1s}
 .cm-chip:hover{border-color:var(--cm-dim-2);background:var(--cm-panel-2)}
-.cm-chip[data-on=true]{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent)}
+.cm-chip[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent)}
 .cm-chip:focus-visible{outline:2px solid var(--cm-accent);outline-offset:1px}
-.cm-chip[data-on=true]{background:var(--cm-accent);color:var(--cm-accent-ink);border-color:var(--cm-accent);font-weight:600}
+.cm-chip[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);border-color:var(--cm-accent);font-weight:600}
 /* Region boxes themselves are real Fabric objects rendered by <canvas> (role:'region', styled via
    REGION_COLOR inline — same as the vanilla demo) — this whole review panel is a side-panel
    overlay, not a canvas-space div overlay, so it doesn't need any absolutely-positioned box/handle
@@ -1000,9 +1313,28 @@ const CSS = `
 .cm-canvas-sec .cm-grp .aside{font-family:inherit;font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--cm-dim)}
 .cm-cv-link{all:unset;cursor:pointer;font-size:11px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--cm-accent)}
 .cm-cv-link:hover{text-decoration:underline}
+.cm-cv-link:disabled{opacity:.4;cursor:not-allowed;text-decoration:none}
+.cm-cb-list{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+.cm-cb-item{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:10px;height:32px;padding:0 10px;border-radius:6px;color:var(--cm-ink);font-size:12.5px;font-weight:500;cursor:pointer;transition:background .1s}
+.cm-cb-item svg{color:var(--cm-dim);flex:none}
+.cm-cb-item:hover:not(:disabled){background:var(--cm-ctl)}
+.cm-cb-item:hover:not(:disabled) svg{color:var(--cm-ink)}
+.cm-cb-item:disabled{opacity:.38;cursor:not-allowed}
+.cm-cb-hint{margin-top:6px;font-size:11.5px;line-height:1.4;color:var(--cm-dim-2)}
+.cm-cb-hint:empty{display:none}
+.cm-fr-bar{display:flex;gap:6px;margin:8px 0 4px}
+.cm-fr-field{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;border-radius:6px;background:var(--cm-ctl);border:1px solid transparent;color:var(--cm-dim-2);transition:border-color .1s,box-shadow .1s}
+.cm-fr-field:hover{border-color:var(--cm-dim-2)}
+.cm-fr-field:focus-within{border-color:var(--cm-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 22%,transparent)}
+.cm-fr-field input{all:unset;flex:1;min-width:0;font-size:12.5px;font-weight:600;color:var(--cm-ink)}
+.cm-fr-btn{all:unset;box-sizing:border-box;flex:none;display:grid;place-items:center;width:34px;height:34px;border-radius:6px;background:var(--cm-ctl);color:var(--cm-dim);cursor:pointer;transition:background .1s,color .1s}
+.cm-fr-btn:hover{background:var(--cm-ctl-hover);color:var(--cm-ink)}
+.cm-fr-btn:disabled{opacity:.35;cursor:not-allowed;background:var(--cm-ctl);color:var(--cm-dim)}
+.cm-frame-del:not(:disabled):hover{color:var(--cm-danger)}
 .cm-cv-dims{display:flex;gap:8px}
 .cm-cv-dim{flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:0 12px;height:40px;border-radius:6px;background:var(--cm-bg);border:1px solid var(--cm-line);font-size:12px;color:var(--cm-dim);transition:border-color .1s,box-shadow .1s}
 .cm-cv-dim:hover{border-color:var(--cm-dim-2)}
+.cm-cv-dim .cm-cv-dim-ico{display:grid;place-items:center;flex:none;color:var(--cm-dim-2)}
 .cm-cv-dim:focus-within{border-color:var(--cm-accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--cm-accent) 22%, transparent)}
 .cm-cv-dim input{all:unset;flex:1;min-width:0;text-align:center;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:13px;font-weight:700;color:var(--cm-ink);-moz-appearance:textfield}
 .cm-cv-dim input::-webkit-inner-spin-button,.cm-cv-dim input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
@@ -1106,6 +1438,139 @@ input[type=range]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 4px color-mix
 .cm-adj-check:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 35%,transparent)}
 .cm-btn.cm-adj-reset{margin-top:12px;width:100%;justify-content:center;padding:10px 12px;border-radius:6px;border-color:transparent;background:var(--cm-panel-2);font-weight:500}
 .cm-btn.cm-adj-reset:hover{border-color:var(--cm-line);background:var(--cm-panel-2)}
+/* === Visual refresh (mirrors the demo's): neutral greys, one UI typeface, sentence-case section
+   labels, flat filled controls at one height (30px) and radius (6px), thin sliders, compact layer
+   rows. Only looks change; every class and behaviour above stays. === */
+.cm-root, .cm-root[data-cm-mode=dark]{
+  --cm-bg:#141416; --cm-panel:#1b1b1e; --cm-panel-2:#26262a; --cm-line:rgba(255,255,255,.08); --cm-line-soft:rgba(255,255,255,.05);
+  --cm-ink:#ececee; --cm-dim:#a1a1aa; --cm-dim-2:#8d8d97; --cm-accent:#3b82f6; --cm-accent-fill:#2c6fe6; --cm-accent-ink:#fff; --cm-stage:#111113;
+  --cm-ctl:#232327; --cm-ctl-hover:#2b2b30; --cm-track-bg:#38383e; --cm-seg-on:#3a3a40;
+  --cm-shadow-sm:0 1px 2px rgba(0,0,0,.3); --cm-shadow-md:0 6px 20px rgba(0,0,0,.35); --cm-shadow-lg:0 16px 48px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.06);
+}
+.cm-root[data-cm-mode=light]{
+  --cm-bg:#f4f4f5; --cm-panel:#ffffff; --cm-panel-2:#f1f1f3; --cm-line:rgba(9,9,11,.09); --cm-line-soft:rgba(9,9,11,.06);
+  --cm-ink:#18181b; --cm-dim:#52525b; --cm-dim-2:#6b6b75; --cm-accent:#2563eb; --cm-accent-fill:#2563eb; --cm-accent-ink:#fff; --cm-stage:#e8e8eb;
+  --cm-ctl:#f1f1f3; --cm-ctl-hover:#e9e9ec; --cm-track-bg:#d9d9de; --cm-seg-on:#ffffff;
+  --cm-shadow-sm:0 1px 2px rgba(9,9,11,.06); --cm-shadow-md:0 6px 20px rgba(9,9,11,.08); --cm-shadow-lg:0 16px 48px rgba(9,9,11,.14),0 0 0 1px rgba(9,9,11,.06);
+}
+.cm-root{font:12.5px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;letter-spacing:-.003em;grid-template-rows:46px 1fr}
+.cm-grp,.cm-props-title,.cm-layer-meta .nm{font-family:inherit}
+/* header */
+.cm-top{gap:10px;padding:0 12px}
+.cm-top .cm-btn{height:28px;padding:0 10px;border:none;border-radius:6px;background:transparent;color:var(--cm-dim);font-weight:500;font-size:12px;gap:6px}
+.cm-top .cm-btn:hover{background:var(--cm-ctl);color:var(--cm-ink)}
+.cm-top .cm-btn-accent,.cm-top .cm-btn-accent:hover{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink)}
+.cm-top .cm-btn-accent:hover{filter:brightness(1.08)}
+.cm-top .cm-icon-btn{border:none;border-radius:6px;color:var(--cm-dim)}
+.cm-top .cm-icon-btn:hover{background:var(--cm-ctl);color:var(--cm-ink)}
+.cm-zoom-pill{background:var(--cm-ctl);border:none;border-radius:6px;padding:2px;height:28px;box-sizing:border-box}
+.cm-zoom-pill .cm-icon-btn:hover{background:var(--cm-ctl-hover)}
+/* rail */
+.cm-rail-btn{width:36px;height:34px;border-radius:7px}
+.cm-rail-btn:hover{background:var(--cm-ctl)}
+.cm-rail-btn[data-on=true]{background:color-mix(in srgb,var(--cm-accent) 18%,transparent);color:var(--cm-accent)}
+.cm-rail-btn[data-on=true] .cm-rail-caret{border-bottom-color:var(--cm-accent)}
+.cm-rail-caret{border-bottom-color:var(--cm-dim-2)}
+/* tabs */
+.cm-lp-tab,.cm-tabs button{font-size:12px;font-weight:500;color:var(--cm-dim-2);padding:12px 4px 10px}
+.cm-lp-tab[aria-selected=true],.cm-tabs button[data-on=true]{color:var(--cm-ink);font-weight:600;border-bottom-color:var(--cm-accent)}
+.cm-tabs{gap:2px;border-bottom-color:var(--cm-line)}
+.cm-lp-count{background:var(--cm-ctl)}
+/* section labels */
+.cm-grp{font-size:11.5px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--cm-ink);margin:14px 0 8px;padding-top:14px;border-top:1px solid var(--cm-line-soft)}
+.cm-grp:first-child{margin-top:0;padding-top:0;border-top:none}
+.cm-dock-head{font-size:11.5px;letter-spacing:0;text-transform:none;color:var(--cm-ink);font-weight:600}
+.cm-dock::after{height:1px;background:var(--cm-line-soft)}
+.cm-canvas-sec{padding-bottom:6px;margin-bottom:16px;border-bottom:1px solid var(--cm-line-soft)}
+.cm-canvas-sec::after{display:none}
+.cm-canvas-sec .aside{color:var(--cm-dim-2)}
+.cm-props-title{font-size:13px;font-weight:600}
+.cm-eyebrow{font-size:11px;letter-spacing:0;text-transform:none;color:var(--cm-dim-2)}
+.cm-field,.cm-field-row{font-size:11px;font-weight:500;color:var(--cm-dim)}
+.cm-slider-row{font-size:11.5px}
+.cm-slider-row .cm-val,.cm-slider-row .cm-tag{font-family:inherit;font-size:11px;color:var(--cm-dim);background:none;padding:0;min-width:34px;justify-content:flex-end}
+.cm-note{font-size:11px;color:var(--cm-dim-2)}
+.cm-subgrp{font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--cm-dim-2);margin:12px 0 4px;opacity:1}
+.cm-disclose{font-size:11.5px;font-weight:600;letter-spacing:0;text-transform:none;color:var(--cm-ink)}
+.cm-adj-row .val{font-family:inherit;font-size:11px;color:var(--cm-dim)}
+/* buttons */
+.cm-btn{height:30px;padding:0 10px;border:none;border-radius:6px;background:var(--cm-ctl);font-weight:500;font-size:12px;gap:6px}
+.cm-btn:hover{border:none;background:var(--cm-ctl-hover)}
+.cm-btn-accent,.cm-btn[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink)}
+.cm-btn-accent:hover,.cm-btn[data-on=true]:hover{background:var(--cm-accent);filter:brightness(1.08)}
+.cm-chip{padding:5px 10px;border:none;border-radius:6px;background:var(--cm-ctl);font-size:11.5px;font-weight:500}
+.cm-chip:hover{border:none;background:var(--cm-ctl-hover)}
+.cm-chip[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink)}
+.cm-icon-btn{border:none;border-radius:6px;background:var(--cm-ctl)}
+.cm-icon-btn:hover{border:none;background:var(--cm-ctl-hover)}
+.cm-icon-btn[data-active=true]{background:color-mix(in srgb,var(--cm-accent) 18%,var(--cm-ctl));color:var(--cm-accent)}
+.cm-zoom-pill .cm-icon-btn{background:none}
+.cm-align{gap:4px}
+.cm-align button{height:28px;border:none;border-radius:6px;background:var(--cm-ctl);color:var(--cm-dim)}
+.cm-align button:hover{border:none;background:var(--cm-ctl-hover);color:var(--cm-ink)}
+.cm-seg{gap:2px;padding:2px;border:none;border-radius:7px;background:var(--cm-ctl)}
+.cm-seg .cm-btn{height:26px;background:none;border-radius:5px;font-size:11.5px}
+.cm-seg .cm-btn[data-on=true],.cm-seg .cm-btn[data-on=true]:hover{background:var(--cm-seg-on);color:var(--cm-ink);box-shadow:var(--cm-shadow-sm);filter:none;font-weight:600}
+.cm-cv-ratios{gap:4px}
+.cm-cv-ratios button{padding:6px 0;border:none;border-radius:6px;background:var(--cm-ctl);font-weight:500;font-size:11.5px}
+.cm-cv-ratios button:hover{border:none;background:var(--cm-ctl-hover)}
+.cm-cv-ratios button[data-on=true]{background:color-mix(in srgb,var(--cm-accent) 18%,var(--cm-ctl));color:var(--cm-accent)}
+.cm-status-pill{font-size:10px;font-weight:600;padding:1px 7px;letter-spacing:0;text-transform:none}
+.cm-tag{border-radius:5px;background:var(--cm-ctl)}
+.cm-curves-tabs button,.cm-curves-presets button{border:none;background:var(--cm-ctl)}
+.cm-curves-tabs button[data-on]{background:color-mix(in srgb,var(--cm-accent) 18%,var(--cm-ctl))}
+/* inputs */
+.cm-field input,.cm-side-body .cm-field input,.cm-side-body .cm-select,.cm-select,.cm-text-input,.cm-swatch-row .cm-hex{height:30px;padding:0 9px;border:1px solid transparent;border-radius:6px;background-color:var(--cm-ctl);font-size:12px}
+.cm-field input:hover,.cm-select:hover,.cm-text-input:hover,.cm-swatch-row .cm-hex:hover{border-color:var(--cm-line)}
+.cm-field input:focus,.cm-select:focus,.cm-text-input:focus,.cm-swatch-row .cm-hex:focus{outline:none;border-color:var(--cm-accent);box-shadow:none}
+.cm-cv-dim,.cm-cv-fill{height:32px;padding:0 10px;border:1px solid transparent;border-radius:6px;background:var(--cm-ctl)}
+.cm-cv-dim:hover,.cm-cv-fill:hover{border-color:var(--cm-line)}
+.cm-cv-dim:focus-within,.cm-cv-fill:focus-within{border-color:var(--cm-accent);box-shadow:none}
+.cm-cv-dim input{font-family:inherit;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.cm-cv-fill .hex,.cm-cv-fill .pct,.cm-cv-fill .pct input,.cm-swatch-row .cm-hex{font-family:inherit;font-variant-numeric:tabular-nums}
+.cm-cv-swatch{width:32px;height:32px}
+.cm-field-row .cm-field-box{height:30px}
+.cm-root input[type=color]{width:24px;height:24px;border-radius:5px}
+.cm-swatch-btn{width:18px;height:18px;border-width:1px;border-color:var(--cm-line)}
+.cm-swatch-btn[data-on=true]{box-shadow:0 0 0 2px var(--cm-panel),0 0 0 3.5px var(--cm-accent);border-color:transparent}
+/* sliders */
+.cm-root input[type=range]{height:18px}
+.cm-root input[type=range]::-webkit-slider-runnable-track{height:3px !important;background:var(--cm-track,var(--cm-track-bg))}
+.cm-root input[type=range]::-moz-range-track{height:3px !important;background:var(--cm-track,var(--cm-track-bg))}
+.cm-root input[type=range]::-webkit-slider-thumb{width:12px;height:12px;margin-top:-4.5px;border:none;background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.25),0 1px 3px rgba(0,0,0,.3)}
+.cm-root input[type=range]::-moz-range-thumb{width:12px;height:12px;border:none;background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.25),0 1px 3px rgba(0,0,0,.3)}
+/* layers */
+.cm-layer{gap:8px;padding:5px 8px 5px 4px;border-radius:6px;border:none}
+.cm-layer:hover{background:var(--cm-ctl)}
+.cm-layer[data-on=true]{background:color-mix(in srgb,var(--cm-accent) 16%,transparent);border:none}
+.cm-layer-thumb{width:28px;height:28px;border-radius:5px;border:1px solid var(--cm-line-soft)}
+.cm-layer-thumb[data-kind=text]{font-size:11px;font-weight:700}
+.cm-layer-meta .nm{font-weight:500;font-size:12px}
+.cm-layer-meta .sub{margin-top:0}
+.cm-layer-actions{background:var(--cm-panel);box-shadow:-10px 0 10px -4px var(--cm-panel);border-radius:6px}
+.cm-layer:hover .cm-layer-actions{background:var(--cm-ctl);box-shadow:-10px 0 10px -4px var(--cm-ctl)}
+.cm-layer[data-on=true] .cm-layer-actions{background:color-mix(in srgb,var(--cm-accent) 16%,var(--cm-panel));box-shadow:-10px 0 10px -4px color-mix(in srgb,var(--cm-accent) 16%,var(--cm-panel))}
+.cm-layer-actions button:hover,.cm-layer .cm-eye:hover{background:var(--cm-ctl-hover)}
+.cm-lp-toolbar{padding:8px 10px}
+.cm-lp-tbtn{width:28px;height:28px;border-radius:6px}
+.cm-lp-tbtn:hover:not(:disabled){background:var(--cm-ctl)}
+/* menus */
+.cm-export-menu,.cm-rail-flyout,.cm-font-pop,.cm-lp-menu{background:var(--cm-panel);border:none;border-radius:10px;box-shadow:var(--cm-shadow-lg)}
+.cm-rail-flyout-item:hover,.cm-rail-flyout-item[data-on=true],.cm-lp-menu button:hover{background:var(--cm-ctl)}
+.cm-cmdk-box{border:none;border-radius:12px;box-shadow:var(--cm-shadow-lg)}
+.cm-cmdk-item{border-radius:6px}
+.cm-cmdk-item[data-on=true]{background:var(--cm-ctl)}
+.cm-cmdk-item .grp{margin:0;padding:0;border:none;font-size:11px;font-weight:500;color:var(--cm-dim-2)}
+
+/* Slider rows: the label is a bare text node, so tracks began at different x. A shared label column aligns them. */
+.cm-side-body .cm-slider-row:has(>input[type=range]+.cm-val),.cm-side-body .cm-slider-row:has(>input[type=range]+.cm-tag){display:grid;grid-template-columns:6.6em minmax(0,1fr) auto;column-gap:8px;align-items:center}
+.cm-match-row{margin:6px 0 2px}
+.cm-match-select{flex:1;min-width:0;height:28px;padding:0 8px;border-radius:6px;background:var(--cm-ctl);color:var(--cm-ink);border:1px solid transparent;font:inherit;font-size:12px}
+.cm-match-select:hover{border-color:var(--cm-line)}.cm-match-select:focus-visible{outline:none;border-color:var(--cm-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--cm-accent) 45%,transparent)}
+.cm-prop-jump{position:sticky;top:-1px;z-index:6;display:flex;gap:4px;flex-wrap:wrap;margin:0 0 10px;padding:8px 0;background:var(--cm-panel);border-bottom:1px solid var(--cm-line-soft,var(--cm-line))}
+.cm-prop-jump button{all:unset;box-sizing:border-box;cursor:pointer;padding:4px 9px;border-radius:999px;font-size:11.5px;font-weight:500;color:var(--cm-dim);background:var(--cm-ctl);border:1px solid transparent}
+.cm-prop-jump button:hover{color:var(--cm-ink);border-color:var(--cm-line)}.cm-prop-jump button:focus-visible{outline:none;color:var(--cm-ink);box-shadow:0 0 0 2px color-mix(in srgb,var(--cm-accent) 45%,transparent)}
+.cm-side-body .cm-grp[id]{scroll-margin-top:52px}
 `;
 
 /* Tone-curve editor: channel tabs, histogram backdrop, click to add a point, drag to move, double-
@@ -1217,11 +1682,15 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const sideRef = useRef(null);
   const edRef = useRef(null);
   const [tool, setTool] = useState('select');
-  const [opts, setOpts] = useState({ size: 30, opacity: 1, hardness: 0.7, color: '#000000', tolerance: 32, addMode: false, gradientType: 'linear', gradientStops: [{ offset: 0, color: '#ef6a2d' }, { offset: 1, color: '#7c3aed' }], cropRatio: 0, paintNewLayer: false });
+  const [cropChip, setCropChip] = useState('Free');
+  const [keepRatio, setKeepRatio] = useState(true);   // Transform's "Keep proportions" for W/H edits
+  const [opts, setOpts] = useState({ size: 30, opacity: 1, hardness: 0.7, color: '#000000', tolerance: 32, bucketTolerance: 32, addMode: false, gradientType: 'linear', gradientStops: [{ offset: 0, color: '#ef6a2d' }, { offset: 1, color: '#7c3aed' }], cropRatio: 0, paintNewLayer: false });
   const [layers, setLayers] = useState([]);
+  const [frames, setFrames] = useState([]);
   const [canvasInfo, setCanvasInfo] = useState({ W: 1080, H: 1080, bg: { color: '#ffffff', alpha: 1, transparent: false } });
   // Group rows folded shut in the layers panel — panel state only, not document state (default: open).
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [collapsedFrames, setCollapsedFrames] = useState(() => new Set());   // frame folders folded shut in the Layers panel
   // Layer-panel thumbnails: generated on demand from the fabric object itself (toDataURL at a
   // small multiplier), cached per layer id and invalidated on every scene change — same
   // version-keyed cache contract as the vanilla demo's layerThumb/_thumbVer, since the headless
@@ -1231,6 +1700,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const [renamingId, setRenamingId] = useState(null);
   const [dragLayerId, setDragLayerId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  const [dropBelow, setDropBelow] = useState(false);
   const lastLayerClickRef = useRef(null);
   // Compare: snapshot the canvas the first time it's ever committed to (i.e. right after the
   // first image/element lands), then let the user flip back to that snapshot vs. the live render
@@ -1261,6 +1731,10 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // Autosave handle + its last status ('ok' | 'ok-trimmed' | 'failed' | 'unavailable'), so the
   // header can warn when a document cannot be stored rather than quietly not saving it.
   const sessionRef = useRef(null);
+  /* Multi-document tabs: core/docs.js owns the documents; this is just the strip's state. */
+  const docsRef = useRef(null);
+  const [docTabs, setDocTabs] = useState([{ id: 'd0', name: 'Untitled 1', active: true }]);
+  const [renamingTab, setRenamingTab] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null);
   /* Export scale. The core always supported a multiplier (Editor#exportPNG(mult)) but the UI
      hardcoded 1x, so every export came out at artboard size — soft on retina, unusable for
@@ -1308,7 +1782,8 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     // own upper-canvas offset + viewport transform — same conversion _pt(opt) uses in editor.js,
     // so this lands exactly where a real click at this screen position would.
     const scenePt = ed().fc.getPointer(e);
-    ed().addImage(src, { name: 'Image' }).then(img => {
+    const asset = assetsRef.current.find(x => x.src === src);
+    ed().addImage(src, { name: imageLayerName(asset && asset.name) }).then(img => {
       if (!img) return;
       img.set({ left: scenePt.x, top: scenePt.y, originX: 'center', originY: 'center' });
       img.setCoords();
@@ -1330,6 +1805,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const [sideTab, setSideTab] = useState('layer');
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const leftShown = useLinger(leftCollapsed, 220), sideShown = useLinger(sideCollapsed, 220);
   // Left panel tab: 'layers' | 'ai' (remembered per browser — a convenience, never required)
   const [leftTab, setLeftTabState] = useState(() => { try { return localStorage.getItem('cm-left-tab') === 'ai' ? 'ai' : 'layers'; } catch (e) { return 'layers'; } });
   const setLeftTab = (t) => { setLeftTabState(t); try { localStorage.setItem('cm-left-tab', t); } catch (e) {} };
@@ -1337,6 +1813,11 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // AI card: which action is running (one at a time, like the AI tab's busy lock) + its message
   const [cardBusy, setCardBusy] = useState(null);
   const [cardMsg, setCardMsg] = useState('');
+  // The layer a "Background removed" note is about — the note goes once that mask does (undone,
+  // deleted, layer removed) instead of describing a cut-out that no longer exists.
+  const cutoutNoteLayerRef = useRef(null);
+  const detectHoverRef = useRef(null);
+  const compareFromEmptyRef = useRef(false);   // the AI Vision row being hovered — outlined on the canvas
   const [snapOn, setSnapOn] = useState(true);
   // Rail flyout: index into TOOLGROUPS of the group whose sub-tool list is currently open (-1 =
   // none), plus the hover tooltip's text/anchor rect — ports the vanilla demo's flyoutGroup/showTip
@@ -1369,6 +1850,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       link.rel = 'stylesheet'; link.href = FONT_STYLESHEET_URL; link.dataset.cmFonts = 'true';
       document.head.appendChild(link);
     }
+    restoreUserFonts().then(() => { if (edRef.current) edRef.current.refreshFonts(); });
     // The shell's own interface faces — same families/weights the vanilla demo's <head> loads.
     if (typeof document !== 'undefined' && !document.querySelector('link[data-cm-ui-fonts]')) {
       const link = document.createElement('link');
@@ -1379,7 +1861,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
 
   useEffect(() => {
     const f = fabric || (typeof window !== 'undefined' && window.fabric);
-    const ed = new Editor({ fabric: f, canvasEl: canvasRef.current, width, height, openCvUrl, voidColor: (THEMES[mode_] || THEMES.dark).stage });
+    const ed = new Editor({ fabric: f, canvasEl: canvasRef.current, width, height, openCvUrl, voidColor: resolveTheme(mode_, theme).stage });
     edRef.current = ed;
     // Overlay chrome: marching-ants selection outline, crop scrim/thirds/handles/dimension
     // readout, hover-select preview, pen in-progress path, and Figma-style smart guides while
@@ -1486,8 +1968,18 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       const ctx = ed.fc.contextTop; if (!ctx) return;
       ed.fc.clearContext(ctx);
       ed.fc.renderTopLayer(ctx);
+      // Fabric draws an editing IText's caret and selection highlight on this same context, so
+      // clearing it blind hides both. Redraw them (renderCursorOrSelection clears + repaints itself).
+      const editing = ed.fc.getActiveObject();
+      if (editing && editing.isEditing && editing.renderCursorOrSelection) editing.renderCursorOrSelection();
       const v = ed.fc.viewportTransform;
       ctx.save(); ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+      // A detected subject hovered in the AI Vision list: outline its box so the rows can be told apart.
+      if (detectHoverRef.current) {
+        const b = detectHoverRef.current;
+        ctx.save(); ctx.lineWidth = 2 / v[0]; ctx.setLineDash([6 / v[0], 4 / v[0]]); ctx.strokeStyle = '#0b6bd3';
+        ctx.fillStyle = 'rgba(11,107,211,0.10)'; ctx.fillRect(b.x, b.y, b.w, b.h); ctx.strokeRect(b.x, b.y, b.w, b.h); ctx.restore();
+      }
       if (ed.selection) {
         const p = selectionToPath2D(ed.selection, ed.W, ed.H);
         ctx.lineWidth = 1.6 / v[0];
@@ -1500,10 +1992,15 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         ctx.lineDashOffset = (6 - antsOffset) / v[0]; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.stroke(p);
         ctx.setLineDash([]);
         const s = ed.selection;
-        if ((s.kind === 'rect' || s.kind === 'ellipse') && (ed.tool === 'marquee' || ed.tool === 'marquee-ellipse')) {
-          const hs = 4.5 / v[0]; ctx.fillStyle = '#d4ff45'; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.lineWidth = 1 / v[0];
-          for (const [hx, hy] of [[s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h],
-                                  [s.x + s.w / 2, s.y], [s.x + s.w / 2, s.y + s.h], [s.x, s.y + s.h / 2], [s.x + s.w, s.y + s.h / 2]]) {
+        if (SEL_TOOLS.includes(ed.tool) && !s.building && !ed._polyBuild) {
+        const sb = selectionBounds(s, ed.W, ed.H), hs = 4.5 / v[0]; ctx.fillStyle = '#d4ff45'; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.lineWidth = 1 / v[0];
+                if ((s.kind === 'poly' || s.kind === 'multipoly')) {   // the outline's own points: drag one to reshape the selection from the inside
+          const rings = s.kind === 'multipoly' ? s.polys : [s.pts]; let n = 0; rings.forEach(r => { n += r.length; });
+          if (n <= 600) { ctx.fillStyle = '#ffffff'; ctx.strokeStyle = 'rgba(0,0,0,.85)'; for (const r of rings) for (const q of r) { ctx.beginPath(); ctx.arc(q.x, q.y, 3.2 / v[0], 0, 7); ctx.fill(); ctx.stroke(); } }
+          ctx.fillStyle = '#d4ff45';
+        }
+        if (s.kind === 'rect' || s.kind === 'ellipse') for (const [hx, hy] of [[sb.x, sb.y], [sb.x + sb.w, sb.y], [sb.x, sb.y + sb.h], [sb.x + sb.w, sb.y + sb.h],
+                                [sb.x + sb.w / 2, sb.y], [sb.x + sb.w / 2, sb.y + sb.h], [sb.x, sb.y + sb.h / 2], [sb.x + sb.w, sb.y + sb.h / 2]]) {
             ctx.beginPath(); ctx.arc(hx, hy, hs, 0, 7); ctx.fill(); ctx.stroke();
           }
         }
@@ -1583,9 +2080,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       if (gradAxis) drawGradientAxis(ctx, gradAxis, v[0]);
       if (brushCursor) drawBrushCursor(ctx, brushCursor, v[0]);
       // Pen path being drawn / vector edit mode — core's drawPenOverlay, shared with the demo.
-      if (penBuild) drawPenOverlay(ctx, penBuild, v[0], { accent: '#4f8ff0' });
+      if (penBuild) drawPenOverlay(ctx, penBuild, v[0], { accent: ed.accent });
       // magic wand / object select still computing: spinning ring at the pointer
-      if (pickBusy) drawPickSpinner(ctx, pickBusy, v[0], { accent: '#4f8ff0' });
+      if (pickBusy) drawPickSpinner(ctx, pickBusy, v[0], { accent: ed.accent });
       ctx.restore();
     };
     // Only for real on-screen redraws. Fabric also fires after:render for OFFSCREEN renders (each
@@ -1608,7 +2105,14 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     ed.fc.on('selection:cleared', refreshLayers);
     ed.fc.on('selection:created', refreshProps);
     ed.fc.on('selection:updated', refreshProps);
+    const dropCutoutNote = () => {
+      const noteId = cutoutNoteLayerRef.current;
+      if (noteId && ed.fc.getActiveObject()?.id !== noteId) { cutoutNoteLayerRef.current = null; setCardMsg(''); }
+    };
+    ed.fc.on('selection:created', dropCutoutNote);
+    ed.fc.on('selection:updated', dropCutoutNote);
     ed.fc.on('selection:cleared', refreshProps);
+    ed.fc.on('text:selection:changed', refreshProps);
     ed.fc.on('object:moving', refreshProps);
     ed.fc.on('object:scaling', refreshProps);
     ed.fc.on('object:rotating', refreshProps);
@@ -1643,7 +2147,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         // the AI insert, which are routinely used to build a mask for the AI Assist tab
         if (t !== lastTool && t !== 'select' && !SEL_TOOLS.includes(t) && t !== 'aiinsert') setSideTab('layer');
         lastTool = t;
-        setTool(t); if (t !== 'aiinsert') setAiInsert(null); if (t !== 'crop') ed.setToolOptions({ cropRatio: 0 }); refreshExtendBanner();
+        setTool(t); if (t !== 'aiinsert') setAiInsert(null); if (t !== 'crop') ed.setToolOptions({ cropRatio: 0 }); setCropChip('Free'); refreshExtendBanner();
         // Leaving objectselect/hoverselect must drop the last hover-preview outline — otherwise it
         // stays drawn (see the hoverPreview render gate above) until another 'hover' event happens
         // to land, which may never come once a different tool is active.
@@ -1655,10 +2159,19 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         // rebuild until the release commit
         if (e && e.live) { refreshProps(); return; }
         thumbVerRef.current++; setLayers(ed.layers()); refreshProps(); refreshCanvasInfo();
-        if (!compareSnapshotRef.current) { compareSnapshotRef.current = ed.exportPNG(); setCompareReady(true); }
+        // Opening an image starts a new document: IT is the "original" Compare shows, not whatever
+        // the first edit before it happened to be (a blank canvas resized to 4:5, say).
+        // A scratch document re-takes its baseline while the page is still empty (it compared against a
+        // blank page at the old size); Compare stays off until there's content.
+        if (!compareSnapshotRef.current || compareFromEmptyRef.current || (e && e.label === 'open')) {
+          const empty = !ed.fc.getObjects().length;
+          compareSnapshotRef.current = ed.exportPNG(); compareFromEmptyRef.current = empty; setCompareReady(!empty);
+        }
+        const noteId = cutoutNoteLayerRef.current;
+        if (noteId && !ed.layers().find(l => l.id === noteId)?.hasMask) { cutoutNoteLayerRef.current = null; setCardMsg(''); }
         refreshExtendBanner();
       }),
-      ed.on('tooloptions', o => setOpts({ size: o.size, opacity: o.opacity, hardness: o.hardness != null ? o.hardness : 0.7, color: o.color, tolerance: o.tolerance, addMode: o.addMode, gradientType: o.gradientType, gradientStops: o.gradientStops, cropRatio: o.cropRatio || 0, paintNewLayer: !!o.paintNewLayer })),
+      ed.on('tooloptions', o => setOpts({ size: o.size, opacity: o.opacity, hardness: o.hardness != null ? o.hardness : 0.7, color: o.color, tolerance: o.tolerance, bucketTolerance: o.bucketTolerance != null ? o.bucketTolerance : 32, addMode: o.addMode, gradientType: o.gradientType, gradientStops: o.gradientStops, cropRatio: o.cropRatio || 0, paintNewLayer: !!o.paintNewLayer })),
       ed.on('guides', g => { dragGuides = g; ed.fc.requestRenderAll(); }),
       ed.on('selection', s => { refreshProps(); setSelMsg(''); setObjselectBusy(false); setSelCount(s ? (selectionPolys(s) || []).length : 0); ed.fc.requestRenderAll(); startAntsLoopIfNeeded(); }),
       ed.on('crop', () => ed.fc.requestRenderAll()),
@@ -1683,7 +2196,8 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       }),
       ed.on('objcount', n => setObjCount(n)),
       ed.on('zoom', z => setZoomPct(Math.round((z || ed.fc.getZoom() || 1) * 100))),
-      ed.on('resize', () => { fitToScreen(); refreshCanvasInfo(); }),
+      ed.on('resize', (e) => { if (e && e.all && fitAllRef.current) fitAllRef.current(); else fitToScreen(); refreshCanvasInfo(); }),
+      ed.on('frames', (list) => { setFrames(list); setLayers(ed.layers()); }),
     ];
     const onObjselectDown = () => {
       if (ed.tool !== 'objectselect' && ed.tool !== 'hoverselect' && ed.tool !== 'magicwand') return;
@@ -1698,13 +2212,13 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     } else if (ai && typeof ai === 'object') {
       ed.ai.register(ai);
     }
-    const stops = [installKeybindings(ed, document, { toolGroups: TOOLGROUPS }),
+    const stops = [installKeybindings(ed, document, { toolGroups: TOOLGROUPS }), installColorPicker(),
       // Right-click menu — core builds the items, mountContextMenu draws them (shared with the demo).
       // Mounted inside .cm-root so the --cm-* theme tokens reach it.
       mountContextMenu(ed, { root: rootRef.current || document.body, vars: { panel: 'var(--cm-panel-2)', line: 'var(--cm-line)', ink: 'var(--cm-ink)', dim: 'var(--cm-dim-2)', hover: 'var(--cm-accent)', hoverInk: 'var(--cm-accent-ink)', danger: 'var(--cm-danger)' } })];
     if (bridge) {
       stops.push(installBridge(src => { ed.openImage(src); trackAsset(src, 'Opened image'); }));
-      stops.push(installDropImport(stageRef.current, src => { ed.addImage(src); trackAsset(src, 'Dropped image'); }));
+      stops.push(installDropImport(stageRef.current, (src, meta) => { ed.addImage(src, { name: imageLayerName(meta && meta.name) }); trackAsset(src, (meta && meta.name) || 'Dropped image'); }));
     }
     /* Session autosave — survive a refresh / tab close. installAutosave debounces ed.toJSON()
        into IndexedDB on 'change' and flushes on pagehide (IndexedDB, not localStorage — one photo
@@ -1720,12 +2234,16 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       sessionRef.current = session;
       stops.push(() => session.stop());
     }
+    const docs = new DocumentSet(ed, { blank: { width, height }, persist: !!autosave, flush: () => (sessionRef.current ? sessionRef.current.saveNow() : Promise.resolve()) });
+    docsRef.current = docs;
+    setDocTabs(docs.list());
+    stops.push(docs.on(list => setDocTabs(list)));
     /* An explicit `image` prop wins over a restored session — the host asked for that specific
        document, so silently replacing it with whatever was last edited in this browser would be
        wrong. Restoring an empty scene is skipped too (indistinguishable from a fresh boot). */
     if (image) { ed.openImage(image); trackAsset(image, 'Opened image'); }
     else if (autosave) {
-      restoreSession(ed).then(extras => {
+      docs.restore().then(r => r === 'loaded' ? readSession().then(rec => rec && rec.extras) : restoreSession(ed)).then(extras => {
         if (!extras || edRef.current !== ed) return;
         if (Array.isArray(extras.assets) && extras.assets.length) setAssets(extras.assets);
         if (extras.compare) { compareSnapshotRef.current = extras.compare; setCompareReady(true); }
@@ -1733,6 +2251,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       });
     }
     setLayers(ed.layers());
+    setFrames(ed.frameList());
     onReady && onReady(ed);
     // The stage may not have its final layout box on the very first paint (fonts/panels still
     // settling) — retry a couple of times, same as the reference editor's own tryFit pattern,
@@ -1748,10 +2267,13 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     const onZoomKey = (e) => {
       const tag = document.activeElement && document.activeElement.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.altKey) return;
+      // bare +/-/0 and Cmd|Ctrl +/-/0/1 all zoom (the modified ones must also stop the browser zooming the whole page)
+      const mod = e.metaKey || e.ctrlKey;
       if (e.key === '+' || e.key === '=') { e.preventDefault(); setZoomAtCenter(ed.fc.getZoom() * 1.2); }
       else if (e.key === '-') { e.preventDefault(); setZoomAtCenter(ed.fc.getZoom() * 0.83); }
-      else if (e.key === '0') { e.preventDefault(); fitToScreen(); }
+      else if (e.key === '0') { e.preventDefault(); if (fitAllRef.current) fitAllRef.current(); else fitToScreen(); }
+      else if (mod && e.key === '1') { e.preventDefault(); setZoomAtCenter(1); }
     };
     document.addEventListener('keydown', onZoomKey);
     return () => {
@@ -1775,7 +2297,10 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       if (!fittedRef.current) { if (fitRef.current && fitRef.current()) fittedRef.current = true; return; }
       e.fc.setDimensions({ width: stage.clientWidth, height: stage.clientHeight });
       e.fc.calcOffset();
-      e.fc.requestRenderAll();
+      /* Synchronous, not requestRenderAll: setDimensions blanks the canvas, and a deferred redraw
+         shows that blank for a frame. While a side panel slides open/shut the observer fires every
+         frame, so the artboard strobed. Drawing here lands before the browser paints. */
+      e.fc.renderAll();
     });
     ro.observe(stage);
     return () => ro.disconnect();
@@ -1800,14 +2325,28 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       const t = el.getAttribute('title');
       if (t) el.setAttribute('aria-label', t);
     });
+    // Sliders / bare inputs: a text node ("Opacity ") beside an <input type=range>, no <label for>.
+    // Name them from the nearest short non-numeric text before them (the readout isn't a name).
+    const VALUE_LIKE = /^[-+\d.,\s]*(%|°|px|em|pt|x)?$/;
+    root.querySelectorAll('input[type=range]:not([aria-label]):not([aria-labelledby]), input[type=text]:not([aria-label]):not([aria-labelledby]), input[type=number]:not([aria-label]):not([aria-labelledby])').forEach(el => {
+      if (el.closest('label') && (el.closest('label').textContent || '').trim()) return;
+      let name = '';
+      for (let n = el.previousSibling; n && !name; n = n.previousSibling) { const t = (n.textContent || '').trim(); if (t && t.length <= 32 && !VALUE_LIKE.test(t)) name = t; }
+      if (!name && el.parentElement) { const lab = el.parentElement.querySelector(':scope > label, :scope > span'); const t = lab && (lab.textContent || '').trim(); if (t && t.length <= 32 && !VALUE_LIKE.test(t)) name = t; }
+      if (!name) name = el.getAttribute('placeholder') || el.getAttribute('title') || '';
+      if (name) el.setAttribute('aria-label', name.replace(/\s+/g, ' '));
+    });
   });
 
   // Keeps the off-canvas mask (see Editor's constructor) matching the stage colour when the
   // light/dark toggle flips — otherwise the mask would show a mismatched patch around the
   // artboard after a theme switch instead of blending into the new stage background.
+  const resolvedTheme = resolveTheme(mode_, theme);
+  const voidColor = resolvedTheme.stage, accentColor = resolvedTheme['accent-fill'] || resolvedTheme.accent;
+  useEffect(() => { if (edRef.current) edRef.current.setAccent(accentColor); }, [accentColor]);
   useEffect(() => {
-    if (edRef.current) edRef.current.setVoidColor((THEMES[mode_] || THEMES.dark).stage);
-  }, [mode_]);
+    if (edRef.current) edRef.current.setVoidColor(voidColor);
+  }, [voidColor]);
 
 
   const ed = () => edRef.current;
@@ -1838,13 +2377,13 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const fitToScreen = useCallback(() => {
     const e = edRef.current, stage = stageRef.current; if (!e || !stage || !stage.clientWidth) return false;
     e.fc.setDimensions({ width: stage.clientWidth, height: stage.clientHeight });
-    const pad = 48;
-    const availW = Math.max(50, stage.clientWidth - pad), availH = Math.max(50, stage.clientHeight - pad);
+    const pad = 48, top = 0;
+    const availW = Math.max(50, stage.clientWidth - pad), availH = Math.max(50, stage.clientHeight - pad - top);
     const z = Math.min(2, Math.max(0.05, Math.min(availW / e.W, availH / e.H)));
     e.fc.setZoom(z);
     const vpt = e.fc.viewportTransform.slice();
     vpt[4] = (stage.clientWidth - e.W * z) / 2;
-    vpt[5] = (stage.clientHeight - e.H * z) / 2;
+    vpt[5] = top + (stage.clientHeight - top - e.H * z) / 2;
     e.fc.setViewportTransform(vpt);
     e.fc.calcOffset();
     e.fc.requestRenderAll();
@@ -1854,6 +2393,73 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // Always points at the latest fitToScreen so the resize observer below reframes to current dims
   // even though it's installed once on mount (same fitRef indirection as the reference editor).
   const fitRef = useRef(null); fitRef.current = fitToScreen;
+  /* "Fit all": with several frames on the page, show them side by side (Figma's Shift+1); with one
+     it is just fit-to-screen. */
+  const fitAll = useCallback(() => {
+    const e = edRef.current, stage = stageRef.current; if (!e || !stage) return false;
+    if (e.frameList().length < 2) return fitToScreen();
+    if (!fitToScreen()) return false;
+    const b = e.frameBounds(), cw = stage.clientWidth, ch = stage.clientHeight, pad = 72;
+    const z = Math.min(2, Math.max(0.05, Math.min((cw - pad) / b.w, (ch - pad) / b.h)));
+    e.fc.setZoom(z);
+    const vpt = e.fc.viewportTransform.slice();
+    vpt[4] = (cw - b.w * z) / 2 - b.x * z;
+    vpt[5] = (ch - b.h * z) / 2 - b.y * z + 8;
+    e.fc.setViewportTransform(vpt);
+    e.fc.calcOffset(); e.fc.requestRenderAll();
+    setZoomPct(Math.round(z * 100));
+    return true;
+  }, [fitToScreen]);
+  const fitAllRef = useRef(null); fitAllRef.current = fitAll;
+
+  // ── voice control: core/voice.js owns the grammar; the shell only supplies zoom/export + a caption.
+  // Handlers live in a ref so the one-time install (mount effect) always calls the latest closures.
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceCap, setVoiceCap] = useState(null);   // { msg, err }
+  const voiceRef = useRef(null);
+  const voiceActionsRef = useRef({});
+  voiceActionsRef.current = {
+    zoomIn: () => setZoomAtCenter(ed().fc.getZoom() * 1.2), zoomOut: () => setZoomAtCenter(ed().fc.getZoom() * 0.83),
+    fit: fitToScreen, zoomTo: (pct) => setZoomAtCenter(pct / 100),
+    exportPNG: () => { const u = ed().exportPNG(); onExport ? onExport(u) : downloadURL(u, 'canvasmith.png'); },
+    saveProject: () => saveProject(), openProject: () => openProject(),
+    reviewCommit: () => commitReview(), reviewCancel: () => closeReview(true),
+    export: (fmt, scale) => {
+      if (fmt === 'svg') return exportSvg();
+      const m = scale || exportScale;
+      const u = fmt === 'jpg' ? ed().exportJPEG(0.92, m) : ed().exportPNG(m);
+      onExport ? onExport(u) : downloadURL(u, 'canvasmith.' + fmt);
+    },
+    newDoc: () => newDocument(), openImage: () => openImagePick(), addImage: () => addImagePick(),
+    theme: (m) => setMode(cur => (m === 'light' || m === 'dark' ? m : cur === 'dark' ? 'light' : 'dark')),
+    compare: () => openCompare(), search: () => openCmdk(),
+    panel: (side, show) => (side === 'left' ? setLeftCollapsed(!show) : setSideCollapsed(!show)),
+  };
+  useEffect(() => {
+    let timer;
+    const v = installVoice(ed(), {
+      actions: new Proxy({}, { get: (_, k) => voiceActionsRef.current[k] }),
+      onStatus: ({ state, text, message }) => {
+        setVoiceOn(!!voiceRef.current && voiceRef.current.listening);
+        clearTimeout(timer);
+        if (state === 'listening') setVoiceCap({ msg: message || 'Listening…' });
+        else if (state === 'thinking' && message) setVoiceCap({ msg: message });
+        else if (state === 'idle') setVoiceCap(null);
+        else if (state === 'thinking') setVoiceCap({ msg: `“${text}” → thinking…` });
+        else if (state === 'done' || state === 'error') {
+          setVoiceCap({ msg: state === 'done' ? `“${text}” → ${message}` : message, err: state === 'error' });
+          timer = setTimeout(() => setVoiceCap(c => (c && /^Listening|^Downloading/.test(c.msg) ? c : null)), Math.max(2500, (message || '').length * 55));
+        }
+      },
+    });
+    voiceRef.current = v;
+    return () => { clearTimeout(timer); v.destroy(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const toggleVoice = () => {
+    const v = voiceRef.current;
+    if (v && v.supported) v.toggle(); else setVoiceCap({ msg: 'Voice control needs Chrome, Edge or Safari', err: true });
+  };
 
   // ── Properties panel actions — mirrors the vanilla demo's wiring 1:1 so both UIs behave the
   // same; refreshProps() (via the 'change'/'selection' events already wired above) keeps `props`
@@ -1905,6 +2511,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     setCompareOpen(true);
   };
   const closeCompare = () => setCompareOpen(false);
+  const compareRef = useRef(null);
+  // dialog behaviour: focus moves in, Tab stays inside, focus returns to the Compare button on close
+  useEffect(() => { if (!compareOpen) return undefined; return trapDialog(compareRef.current, { initial: '.cm-compare-close' }); }, [compareOpen]);
   useEffect(() => {
     if (compareOpen) {
       const onKey = (e) => { if (e.key === 'Escape') closeCompare(); };
@@ -1925,6 +2534,10 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const ALL_TOOL_ITEMS = GROUPS.flatMap(g => g.tools).map(([id, label]) => ({ group: 'Tool', icon: id, label, run: () => ed().setTool(id) }));
   const buildActionItems = () => [
     { group: 'Edit', icon: 'plus', label: 'New document', run: newDocument },
+    { group: 'Edit', icon: 'plus', label: 'Add frame', run: () => { const e = ed(); if (e) e.addFrame(); } },
+    { group: 'Edit', icon: 'plus', label: 'New canvas tab', run: () => { const d = docsRef.current; if (d && d.count < MAX_DOCS) d.add(); } },
+    { group: 'Edit', icon: 'duplicate', label: 'Duplicate canvas tab', run: () => docsRef.current && docsRef.current.duplicate() },
+    { group: 'Edit', icon: 'close', label: 'Close canvas tab', run: () => docsRef.current && closeDocTab(docsRef.current.activeId) },
     { group: 'Edit', icon: 'undo', label: 'Undo', run: () => ed().undo() },
     { group: 'Edit', icon: 'redo', label: 'Redo', run: () => ed().redo() },
     { group: 'Edit', icon: 'duplicate', label: 'Duplicate layer', run: duplicate },
@@ -1934,28 +2547,45 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     { group: 'Select', icon: 'close', label: 'Deselect', run: () => ed().clearSelection() },
     { group: 'View', icon: 'plus', label: 'Zoom in', run: () => setZoomAtCenter(ed().fc.getZoom() * 1.2) },
     { group: 'View', icon: 'minus', label: 'Zoom out', run: () => setZoomAtCenter(ed().fc.getZoom() * 0.83) },
-    { group: 'View', icon: 'maximize', label: 'Fit to screen', run: fitToScreen },
+    { group: 'View', icon: 'maximize', label: 'Fit to screen', run: () => fitAll() },
     { group: 'View', icon: 'search', label: 'Compare with original', run: openCompare },
     { group: 'View', icon: mode_ === 'dark' ? 'sun' : 'moon', label: 'Toggle light/dark theme', run: () => setMode(m => m === 'dark' ? 'light' : 'dark') },
     { group: 'View', icon: 'chevron', label: leftCollapsed ? 'Show side panel' : 'Hide side panel', run: () => setLeftCollapsed(s => !s) },
     { group: 'View', icon: 'chevron', label: sideCollapsed ? 'Show Properties panel' : 'Hide Properties panel', run: () => setSideCollapsed(s => !s) },
     { group: 'Insert', icon: 'type', label: 'Add text', run: () => ed().setTool('type') },
     { group: 'Insert', icon: 'box', label: 'Add rectangle', run: () => ed().setTool('rect') },
-    { group: 'Insert', icon: 'eye', label: 'Add ellipse', run: () => ed().setTool('ellipse') },
+    { group: 'Insert', icon: 'ellipse', label: 'Add ellipse', run: () => ed().setTool('ellipse') },
     { group: 'Insert', icon: 'duplicate', label: 'Add image…', run: addImagePick },
     { group: 'Insert', icon: 'spark', label: 'Add CTA button', run: () => { ed().addCTA(null, { text: 'Shop now' }); ed().setTool('select'); } },
-    { group: 'Insert', icon: 'hoverselect', label: 'Add badge', run: () => { ed().addBadge(null, { text: 'Sale' }); ed().setTool('select'); } },
+    { group: 'Insert', icon: 'star', label: 'Add badge', run: () => { ed().addBadge(null, { text: 'Sale' }); ed().setTool('select'); } },
     { group: 'Insert', icon: 'box', label: 'Add price', run: () => { ed().addPrice(null, { current: '$29', original: '$40', save: 'Save 27%' }); ed().setTool('select'); } },
     { group: 'Insert', icon: 'box', label: 'Add brand lockup', run: () => { ed().addBrandLockup(null, { text: 'Brand' }); ed().setTool('select'); } },
     { group: 'Export', icon: 'duplicate', label: 'Export PNG', run: () => { const u = ed().exportPNG(); onExport ? onExport(u) : downloadURL(u, 'canvasmith.png'); } },
     { group: 'Export', icon: 'duplicate', label: 'Export JPG', run: () => { const u = ed().exportJPEG(); onExport ? onExport(u) : downloadURL(u, 'canvasmith.jpg'); } },
     { group: 'Export', icon: 'duplicate', label: 'Export SVG', run: exportSvg },
+    // Everyday layer actions the palette was missing — "flip", "lock", "front"... found nothing.
+    { group: 'Arrange', icon: 'flip', label: 'Flip horizontal', run: () => ed().flipLayer('x') },
+    { group: 'Arrange', icon: 'flip', label: 'Flip vertical', run: () => ed().flipLayer('y') },
+    { group: 'Arrange', icon: 'reset', label: 'Rotate 90°', run: () => { const o = ed().fc.getActiveObject(); if (o) ed().setNumeric({ angle: ((o.angle || 0) + 90) % 360 }); } },
+    { group: 'Arrange', icon: 'stackfront', label: 'Bring to front', run: () => ed().arrangeSelection('top') },
+    { group: 'Arrange', icon: 'stackup', label: 'Bring forward', run: () => ed().arrangeSelection('up') },
+    { group: 'Arrange', icon: 'stackdown', label: 'Send backward', run: () => ed().arrangeSelection('down') },
+    { group: 'Arrange', icon: 'stackback', label: 'Send to back', run: () => ed().arrangeSelection('bottom') },
+    { group: 'Arrange', icon: 'align-h-center', label: 'Center horizontally on canvas', run: () => ed().fc.getActiveObject() && ed().alignActiveSelection('center') },
+    { group: 'Arrange', icon: 'align-v-center', label: 'Center vertically on canvas', run: () => ed().fc.getActiveObject() && ed().alignActiveSelection('middle') },
+    { group: 'Layer', icon: 'lock', label: 'Lock / unlock layer', run: () => ed().toggleSelectionLock() },
+    { group: 'Layer', icon: 'hoverselect', label: 'Hide / show layer', run: () => ed().toggleSelectionVisible() },
+    { group: 'Layer', icon: 'contrast', label: 'Add adjustment layer', run: () => ed().addAdjustmentLayer() },
+    { group: 'Layer', icon: 'scissors', label: 'Remove background', run: () => removeBg() },
+    { group: 'Select', icon: 'grid', label: 'Select all layers', run: () => ed().selectAllLayers() },
+    { group: 'Edit', icon: 'duplicate', label: 'Copy as PNG', run: () => ed().copyAsPNG() },
+    { group: 'Export', icon: 'folder', label: 'Save project file', run: saveProject },
   ];
   const cmdkAllItems = () => ALL_TOOL_ITEMS.concat(buildActionItems());
   const cmdkFilteredItems = () => {
     const q = cmdkQuery.trim().toLowerCase();
     const all = cmdkAllItems();
-    return q ? all.filter(it => it.label.toLowerCase().includes(q) || it.group.toLowerCase().includes(q)) : all;
+    return rankCommands(all, q);
   };
   const openCmdk = () => { setCmdkQuery(''); setCmdkIdx(0); setCmdkOpen(true); requestAnimationFrame(() => cmdkInputRef.current && cmdkInputRef.current.focus()); };
   const closeCmdk = () => setCmdkOpen(false);
@@ -1982,8 +2612,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const centerV = () => ed().fc.getActiveObject() && ed().alignActiveSelection('middle');
   const setShadow = (patch) => ed().setShadow({ ...props.shadow, ...patch });
   const clearShadow = () => ed().setShadow({ blur: 0, offsetX: 0, offsetY: 0 });
-  const expandSel = async () => showSelResult(await ed().expandSelection(6));
-  const contractSel = async () => showSelResult(await ed().contractSelection(6));
+  const [morphPx, setMorphPx] = useState(6);
+  const expandSel = async () => showSelResult(await ed().expandSelection(morphPx));
+  const contractSel = async () => showSelResult(await ed().contractSelection(morphPx));
   const selectSimilar = async () => showSelResult(await ed().selectSimilar());
   // Objectselect's Shift-click/Add mode deliberately keeps every picked object as a separate
   // polygon (see Editor#_commitObjectPoly) instead of auto-unioning — Merge is the explicit second
@@ -2007,7 +2638,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const [detectResults, setDetectResults] = useState([]);
   const [detectRan, setDetectRan] = useState(false);
   const runCard = async (key, fn) => {
-    setCardBusy(key); setCardMsg('');
+    setCardBusy(key); setCardMsg(''); cutoutNoteLayerRef.current = null;
     try { return await fn(); } finally { setCardBusy(null); }
   };
   // Results land in the AI Vision tab (switched to automatically); failures go on the card, since
@@ -2021,7 +2652,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   };
   // method: undefined = AI when keyed, else offline; 'local' = always offline (same messages as the demo)
   const removeBg = async (method) => {
+    const id = ed().fc.getActiveObject()?.id;
     const r = await runCard(method === 'local' ? 'removebg-local' : 'removebg', () => ed().removeBackground(method ? { method } : undefined));
+    cutoutNoteLayerRef.current = r.status === 'ok' ? id : null;
     setCardMsg(r.status !== 'ok' ? (r.message || r.reason)
       : r.method === 'ai'
         ? 'Background removed (AI cutout) — it\'s a layer mask: refine it with the brush, or undo.'
@@ -2033,6 +2666,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // Detected subjects → real layers (one box, or all of them). Clears the list afterwards: the
   // boxes were measured against the pre-convert composition and no longer describe the new layers.
   const detectedToLayers = async (boxes) => {
+    detectHoverRef.current = null;   // the rows unmount without a mouseleave
     const r = await runCard('tolayers', () => ed().detectedBoxesToLayers(boxes, bgMode));
     if (r.status !== 'ok') { setCardMsg(r.message || SEL_REASON_MSG[r.reason] || r.reason); return; }
     setDetectResults([]); setDetectRan(false);
@@ -2041,6 +2675,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   };
   const [exportOpen, setExportOpen] = useState(false);
   const [csOpen, setCsOpen] = useState(false);
+  const [featherOpen, setFeatherOpen] = useState(false);
+  const [featherMode, setFeatherMode] = useState('mask');   // image layers: live mask, or bake into the pixels
+  const [featherDraft, setFeatherDraft] = useState(0);
   const [csW, setCsW] = useState(width);
   const [csH, setCsH] = useState(height);
   const [csLock, setCsLock] = useState(true);
@@ -2048,6 +2685,14 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   const applyCanvasSize = () => { if (csW > 0 && csH > 0) ed().resizeCanvas(csW, csH); setCsOpen(false); };
   // Export dropdown: click outside the anchor closes it (picking a format also closes it, handled
   // inline at each menu item) — same interaction as the vanilla demo's export-menu.
+  // Escape with the Feather popover or the export menu open closes just that, before the editor's
+  // own Escape (deselect) sees it — capture phase on window.
+  useEffect(() => {
+    if (!exportOpen && !featherOpen) return;
+    const onKey = (e) => { if (e.key !== 'Escape') return; e.preventDefault(); e.stopPropagation(); setExportOpen(false); setFeatherOpen(false); };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [exportOpen, featherOpen]);
   useEffect(() => {
     if (!exportOpen) return;
     const onDocClick = (e) => { if (!e.target.closest('.cm-export-anchor')) setExportOpen(false); };
@@ -2059,9 +2704,10 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // ── Design tab: canvas-level background/fill tools and add-element shortcuts ────────────
   const [designBusy, setDesignBusy] = useState(false);
   const [stickerCat, setStickerCat] = useState(0);
+  const [stickerView, setStickerView] = useState('shapes');
   // Design ▸ Add element: Text / Box / Circle land centred and selected right away (demo #add-text etc.)
   const addCentred = (kind) => {
-    const e = ed(), at = { x: e.W / 2, y: e.H / 2 };
+    const e = ed(), at = e.nextSpot();
     const o = kind === 'text' ? makeText(e.fabric, at, { fontSize: 48 }) : makeShape(e.fabric, kind, at, e.toolOpts);
     if (!o) return;
     e.fc.add(o); e.fc.setActiveObject(o); e.commit(kind === 'text' ? 'text' : 'shape'); e.setTool('select');
@@ -2086,18 +2732,20 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     if (r.status !== 'ok') setDesignMsg(r.message || r.reason);
   };
   const fillWithColor = (color) => ed().fillWithColor(color);
-  const pickImage = (onPicked) => {
+  // resolves once onPicked has finished, so a voice chain ("add an image then make it red") can wait for the picture
+  const pickImage = (onPicked) => new Promise((res, rej) => {
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+    inp.oncancel = () => rej(new Error('No image chosen'));
     inp.onchange = (e) => {
-      const f = e.target.files[0]; if (!f) return;
+      const f = e.target.files[0]; if (!f) return rej(new Error('No image chosen'));
       const rd = new FileReader();
-      rd.onload = (ev) => onPicked(ev.target.result);
+      rd.onload = (ev) => Promise.resolve(onPicked(ev.target.result, f.name)).then(() => res('Image added'), rej);
       rd.readAsDataURL(f);
     };
     inp.click();
-  };
+  });
   const fillWithImagePick = () => pickImage(src => ed().fillWithImage(src));
-  const addImagePick = () => pickImage(src => { ed().addImage(src); trackAsset(src, 'Image'); });
+  const addImagePick = () => pickImage((src, fileName) => { trackAsset(src, fileName || 'Image'); return ed().addImage(src, { name: imageLayerName(fileName) }); }).catch(() => {});
   /* "Open image…" starts a fresh document from the photo: the artboard resizes to match the
      image (Editor#openImage's fit-artboard behavior), same as the vanilla demo's header button.
      addImagePick above stays the "insert into the current artboard" tool. */
@@ -2107,6 +2755,13 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
      which makes this the one irreversible action in the editor — and with autosave on it wipes
      the saved copy too. An already-empty document has nothing to lose, so it skips the prompt.
      Ports the vanilla demo's own newdoc handler. */
+  const closeDocTab = (id) => {
+    const docs = docsRef.current, e = ed(); if (!docs || !e) return;
+    const d = docs.docs.find(x => x.id === id); if (!d) return;
+    const empty = id === docs.activeId ? !e.fc.getObjects().length : !d.parked || !JSON.parse(d.parked.scene).scene.objects.length;
+    if (!empty && !window.confirm('Close \u201c' + d.name + '\u201d? Its layers will be discarded.')) return;
+    docs.close(id);
+  };
   const newDocument = async () => {
     const e = ed(); if (!e) return;
     const blank = () => {
@@ -2140,7 +2795,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
      layers, masks and adjustments out of the browser — no backup, no moving machines, no
      handing the document to someone else. */
   const saveProject = () => {
-    const blob = new Blob([exportProject(ed(), { assets })], { type: 'application/json' });
+    const blob = new Blob([exportProject(ed(), { assets }, docsRef.current)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     downloadURL(url, 'canvasmith-project.canvasmith');
     URL.revokeObjectURL(url);
@@ -2155,7 +2810,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       const r = new FileReader();
       r.onload = async () => {
         try {
-          const extras = await loadProject(e, r.target.result);
+          const extras = await loadProject(e, r.target.result, docsRef.current);
           if (Array.isArray(extras.assets)) setAssets(extras.assets);
           if (extras.compare) { compareSnapshotRef.current = extras.compare; setCompareReady(true); }
           if (fitRef.current) fitRef.current();
@@ -2172,6 +2827,11 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // Vector export — exportSVG() returns a plain SVG string (not a dataURL, unlike PNG/JPEG), so
   // it needs wrapping in a Blob URL before it can be downloaded — same as the vanilla demo's own
   // svg.onclick. Previously absent from the React shell entirely (only PNG/JPG existed here).
+  const exportAllFrames = () => {
+    ed().exportAllFrames('png', exportScale).forEach((f, i) => setTimeout(() => {
+      if (onExport) onExport(f.url); else downloadURL(f.url, `${f.name.replace(/[^\w\- ]+/g, '').trim() || 'frame'}${exportScale === 1 ? '' : '@' + exportScale + 'x'}.png`);
+    }, i * 250));
+  };
   const exportSvg = () => {
     const blob = new Blob([ed().exportSVG()], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
@@ -2644,7 +3304,12 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   };
   const onLayerRowClick = (l, e) => {
     // Shift/Cmd/Ctrl-click: add to / remove from a multi-selection (then ⌘G groups it).
-    if (e && (e.shiftKey || e.metaKey || e.ctrlKey)) { lastLayerClickRef.current = null; ed().toggleLayerSelection(l.id); return; }
+    if (e && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+      lastLayerClickRef.current = null;
+      // Shift = range from the selected layer, Cmd/Ctrl = add/remove one (Figma/Photoshop).
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey) ed().selectLayerRange(l.id); else ed().toggleLayerSelection(l.id);
+      return;
+    }
     // Manual double-click detection keyed on the layer id (not the DOM node), same reasoning as
     // the vanilla demo: activate() re-renders the row via React state on selection change, so a
     // native 'dblclick' (which needs both clicks on the SAME node) would miss the common
@@ -2663,21 +3328,23 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', l.id);
   };
+  // Top half of a row drops above it, bottom half below (it only went above: the bottom slot was unreachable).
+  const lowerHalf = (e) => { const r = e.currentTarget.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
   const onLayerDragOver = (e, l) => {
     if (!dragLayerId || l.id === dragLayerId) return;
     e.preventDefault();
+    const below = lowerHalf(e);
     if (dragOverId !== l.id) setDragOverId(l.id);
+    if (dropBelow !== below) setDropBelow(below);
   };
   const onLayerDrop = (e, l) => {
     e.preventDefault();
-    if (dragLayerId && l.id !== dragLayerId) ed().reorderLayerTo(dragLayerId, l.id, { after: false });
+    if (dragLayerId && l.id !== dragLayerId) ed().reorderLayerTo(dragLayerId, l.id, { after: lowerHalf(e) });
     setDragLayerId(null); setDragOverId(null);
   };
   const onLayerDragEnd = () => { setDragLayerId(null); setDragOverId(null); };
 
-  const palette = THEMES[mode_] || THEMES.dark;
-  const style = Object.fromEntries(Object.entries({ ...palette, 'accent-ink': palette.accentInk, ...theme })
-    .filter(([k]) => k !== 'accentInk').map(([k, v]) => ['--cm-' + k, v]));
+  const style = Object.fromEntries(Object.entries(resolveTheme(mode_, theme)).map(([k, v]) => ['--cm-' + k, v]));
   /* Left panel (matches the vanilla demo's #left-panel): Layers / AI Vision tabs; the Layers view
      is a toolbar + the layer list + a contextual tool dock that only opens when the active tool has
      options or a pixel selection / clipped layer / mask edit is live — so with plain Select the
@@ -2699,7 +3366,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // A group row whose member is focused hands the highlight to that member's row, unless the group
   // is folded and that row isn't shown (same as the demo).
   const layerRow = (l) => (
-    <div key={l.id} className="cm-layer" role="listitem" data-on={(l.selected || l.active || l.childActive) && !(l.childActive && !collapsedGroups.has(l.id))} data-visible={l.visible} data-dragover={dragOverId === l.id} data-dragging={dragLayerId === l.id}
+    <div key={l.id} className="cm-layer" role="listitem" data-on={(l.selected || l.active || l.childActive) && !(l.childActive && !collapsedGroups.has(l.id))} data-visible={l.visible} data-dragover={dragOverId === l.id} data-drop={dragOverId === l.id ? (dropBelow ? 'below' : 'above') : undefined} data-dragging={dragLayerId === l.id}
       data-child={l.parentId ? true : undefined} aria-expanded={l.isGroup ? !collapsedGroups.has(l.id) : undefined}
       draggable={l.role !== 'bg'}
       onDragStart={e => onLayerDragStart(e, l)} onDragOver={e => onLayerDragOver(e, l)}
@@ -2727,17 +3394,17 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         </span>
       )}
       <span className="cm-layer-actions">
-        <button title="Move up" onClick={stop(() => ed().moveLayer(l.id, 'up'))}><Icon name="up" size={12} /></button>
+        {/* no row "Move up": on hover it covered the name, so a click meant to select reordered the layer */}
         {l.maskable && (l.hasMask ? (
           <React.Fragment>
             <button title={l.editingMask ? 'Stop editing mask' : 'Edit mask'} data-active={l.editingMask || !l.maskEnabled}
               onClick={stop(() => { if (l.editingMask) ed().exitMaskEdit(); else { ed().activate(l.id); ed().enterMaskEdit(l.id); } })}><Icon name="mask" size={12} /></button>
-            <button title="Delete mask" onClick={stop(() => ed().removeMask(l.id))}><Icon name="close" size={12} /></button>
+            <button title="Delete mask" onClick={stop(() => ed().removeMask(l.id))}><Icon name="maskoff" size={12} /></button>
           </React.Fragment>
         ) : (
           <button title="Add layer mask" onClick={stop(() => { ed().addMask(l.id); ed().enterMaskEdit(l.id); })}><Icon name="mask" size={12} /></button>
         ))}
-        {l.role !== 'bg' && <button title="Delete" onClick={stop(() => ed().removeLayer(l.id))}><Icon name="close" size={12} /></button>}
+        {l.role !== 'bg' && <button title="Delete layer" onClick={stop(() => ed().removeLayer(l.id))}><Icon name="trash" size={12} /></button>}
       </span>
     </div>
   );
@@ -2748,7 +3415,23 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
       {!collapsedGroups.has(l.id) && <div className="cm-layer-children" role="group">{l.children.map(layerTree)}</div>}
     </React.Fragment>
   );
-  const layerRows = layers.map(layerTree);
+  /* Several frames: grouped Figma-style — each frame is a folder row with its layers nested inside.
+     One frame: the flat list as before. */
+  const layerRows = frames.length < 2 ? layers.map(layerTree) : frames.map(f => {
+    const ls = layers.filter(l => (l.frameId === f.id) || (!frames.some(x => x.id === l.frameId) && f.id === frames[0].id));
+    const open = !collapsedFrames.has(f.id);
+    return (
+      <React.Fragment key={'frame-' + f.id}>
+        <div className="cm-frame-head" role="listitem" data-on={f.active} aria-expanded={open} title={f.name + ' \u2014 click to work in this frame'}
+          onClick={() => ed().activateFrame(f.id)}>
+          <button className="cm-fh-fold" data-open={open} aria-label={open ? 'Collapse frame' : 'Expand frame'}
+            onClick={(e) => { e.stopPropagation(); setCollapsedFrames(prev => { const n = new Set(prev); n.has(f.id) ? n.delete(f.id) : n.add(f.id); return n; }); }}><Icon name="chevronD" size={13} /></button>
+          <span className="cm-fh-ico"><Icon name="frame" size={13} /></span><span className="cm-fh-name">{f.name}</span><span className="cm-fh-count">{ls.length}</span>
+        </div>
+        {open && <div className="cm-frame-layers" role="group">{ls.length ? ls.map(layerTree) : <div className="cm-frame-empty">No layers</div>}</div>}
+      </React.Fragment>
+    );
+  });
   const ADD_ITEMS = [['type', 'Text', () => ed().setTool('type')], ['rect', 'Rectangle', () => ed().setTool('rect')], ['ellipse', 'Ellipse', () => ed().setTool('ellipse')], ['image', 'Image…', addImagePick], ['brush', 'Paint layer', () => ed().setTool('brush')]];
   const layersToolbar = (
     <div className="cm-lp-toolbar">
@@ -2788,13 +3471,11 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
           <React.Fragment>
             <button className="cm-btn cm-btn-accent" title="Apply crop (Enter)" style={{ marginBottom: 8, width: '100%', justifyContent: 'center' }} onClick={() => ed().applyCrop()}>✓ Apply crop <span className="cm-key-hint">↵ Enter</span></button>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid var(--cm-line-soft)' }}>
-            {CROP_RATIOS.map(([label, r]) => {
-              const ratio = r === 'orig' ? ed().W / ed().H : r;
-              const on = r === 'orig' ? opts.cropRatio === (ed().W / ed().H) : opts.cropRatio === r;
-              return (
-                <button key={label} className="cm-chip" data-on={on} onClick={() => ed().setToolOptions({ cropRatio: ratio })}>{label}</button>
-              );
-            })}
+            {CROP_RATIOS.map(([label, r]) => (
+              // The picked chip is the lit one (a 9:16 photo's Original is also 9:16), and "Original"
+              // is the shape of what's being cropped — the image layer, not the page.
+              <button key={label} className="cm-chip" data-on={cropChip === label} onClick={() => { setCropChip(label); ed().setToolOptions({ cropRatio: r === 'orig' ? ed().cropOriginalRatio() : r }); }}>{label}</button>
+            ))}
           </div>
           </React.Fragment>
         )}
@@ -2844,6 +3525,16 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
             ? `Source set at ${Math.round(cloneSrc.x)}, ${Math.round(cloneSrc.y)} — now paint to ${tool === 'heal' ? 'heal with' : 'stamp'} those pixels. ⌥/⇧-click to re-source.`
             : (TOOL_HINTS[tool] || 'Drag on the canvas to use this tool.')}
         </div>
+        {/* colour-match tolerance for the magic wand and the paint bucket (only reachable via [ ] before) */}
+        {(tool === 'wand' || tool === 'bucket') && (() => {
+          const key = tool === 'bucket' ? 'bucketTolerance' : 'tolerance';
+          return (
+            <div className="cm-slider-row" style={{ marginTop: 10 }} title="How different a colour can be and still be included">Tolerance
+              <input type="range" min="0" max="128" value={opts[key]} onChange={e => ed().setToolOptions({ [key]: +e.target.value })} />
+              <span className="cm-val">{opts[key]}</span>
+            </div>
+          );
+        })()}
 
 
         {/* Brush/Color section — only the sliders+swatches a given tool can actually read
@@ -2861,9 +3552,10 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
             )}
             {/* Colour only for tools that paint WITH it — the eraser/clone/heal/tone tools ignore it. */}
             {!NO_COLOR_TOOLS.includes(tool) && <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-              <input type="color" value={opts.color} onChange={e => ed().setToolOptions({ color: e.target.value, fill: e.target.value })} title="Colour" />
+              {/* A mask is only black (hide) or white (reveal): no colour picker or colour swatches while editing one. */}
+              {!maskEdit && <input type="color" value={opts.color} onChange={e => ed().setToolOptions({ color: e.target.value, fill: e.target.value })} title="Colour" />}
               <div style={{ display: 'flex', gap: 6, flex: 1 }}>
-                {BRUSH_SWATCHES.map(c => (
+                {BRUSH_SWATCHES.filter(c => !maskEdit || c === '#ffffff' || c === '#000000').map(c => (
                   <button key={c} className="cm-swatch-btn" data-on={c.toLowerCase() === (opts.color || '').toLowerCase()}
                     style={{ background: c }} title={c}
                     onClick={() => ed().setToolOptions({ color: c, fill: c })} />
@@ -2876,10 +3568,11 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
             the canvas says so — this states the step you're on and offers a reset. */}
         {(tool === 'clone' || tool === 'heal') && (
           <div>
-            <div className="cm-grp">{tool === 'heal' ? 'Healing brush' : 'Clone stamp'}</div>
+            <div className="cm-grp">{tool === 'heal' ? 'Heal from a chosen spot (optional)' : 'Clone stamp'}</div>
             <div className="cm-note" style={{ marginTop: 6 }}>
               {cloneSrc
                 ? `Source set at ${Math.round(cloneSrc.x)}, ${Math.round(cloneSrc.y)} — now paint to ${tool === 'heal' ? 'heal with' : 'stamp'} those pixels.`
+                : tool === 'heal' ? 'No source: strokes heal from the surroundings. ⌥/⇧-click a spot to heal from it instead.'
                 : 'Step 1 — hold ⌥ (Alt) or ⇧ (Shift) and click the area you want to copy FROM.'}
             </div>
             <button className="cm-btn" style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
@@ -3022,6 +3715,13 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
               <button className="cm-btn" disabled={!props.hasSelectionPixels} onClick={expandSel}><Icon name="expand" size={13} /> Expand</button>
               <button className="cm-btn" disabled={!props.hasSelectionPixels} onClick={contractSel}><Icon name="contract" size={13} /> Contract</button>
             </div>
+            <div className="cm-slider-row" style={{ marginTop: 6 }} title="How far Expand / Contract move the edge">Amount <input type="range" min="1" max="100" value={morphPx} onChange={e => setMorphPx(+e.target.value)} /><span className="cm-tag mono">{morphPx}px</span></div>
+            <div className="cm-note" style={{ marginTop: 4 }}>Drag a white point on the outline to reshape it (⌘/Ctrl-drag moves just that point; drag an edge to add a point). Dragging inside moves it, arrows nudge.</div>
+            <div className="cm-slider-row" style={{ marginTop: 6 }} title="Soften the selection edge (Photoshop's Feather). Applies when you copy, move or recolour the selection.">
+              Feather <input type="range" min="0" max="100" disabled={!props.hasSelectionPixels} value={props.hasSelectionPixels ? (props.selFeather || 0) : 0}
+                onChange={e => { ed().featherSelection(+e.target.value); }} />
+              <span className="cm-tag mono">{props.hasSelectionPixels ? (props.selFeather || 0) : 0}px</span>
+            </div>
             <button className="cm-btn" style={{ marginTop: 6, width: '100%', justifyContent: 'center' }} disabled={!props.hasSelectionPixels} onClick={selectSimilar}>
               <Icon name="similar" size={13} /> Select Similar Colors
             </button>
@@ -3064,6 +3764,37 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
           <Icon name="search" size={13} /><span style={{ color: 'var(--cm-dim)', fontSize: 11.5 }}>Search</span><span className="cm-tag mono" style={{ fontSize: 9.5 }}>⌘K</span>
         </button>
         <span className="cm-hdiv" />
+        <span style={{ position: 'relative' }}>
+          <button className="cm-btn" title="Feather — soften the edge of the selection, or of the selected image" onClick={() => setFeatherOpen(o => !o)}>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4.5" /><circle cx="12" cy="12" r="8" strokeDasharray="1 3.2" /><circle cx="12" cy="12" r="10.8" strokeDasharray=".1 4.6" opacity=".6" /></svg>
+            <span>Feather</span>
+          </button>
+          {featherOpen && (() => {
+            const ft = ed().featherTarget(), kind = ft ? ft.kind : null, val = ft ? ft.value : 0;
+            return (
+              <div style={{ position: 'absolute', left: 0, top: 'calc(100% + 6px)', zIndex: 60, width: 230, background: 'var(--cm-panel)', border: '1px solid var(--cm-line)', borderRadius: 10, padding: 14, boxShadow: '0 8px 24px rgba(0,0,0,.35)' }}>
+                <h4 style={{ margin: '0 0 8px', fontSize: 12 }}>Feather</h4>
+                <div style={{ fontSize: 11.5, marginBottom: 6 }}>{kind === 'selection' ? 'Applies to: selection' : kind === 'layer' ? 'Applies to: selected image' : 'Nothing to feather yet'}</div>
+                {kind === 'layer' && (
+                  <div className="cm-seg" role="group" aria-label="Apply feather as" style={{ marginBottom: 8 }}>
+                    <button type="button" className="cm-btn" data-on={String(featherMode === 'mask')} title="Non-destructive: a layer mask you can edit or remove" onClick={() => setFeatherMode('mask')}>As mask</button>
+                    <button type="button" className="cm-btn" data-on={String(featherMode === 'layer')} title="Permanent: fades the image's own pixels (undo to revert)" onClick={() => setFeatherMode('layer')}>On the layer</button>
+                  </div>
+                )}
+                {(() => { const bake = kind === 'layer' && featherMode === 'layer', shown = bake ? featherDraft : val; return (
+                  <div className="cm-slider-row"><input type="range" min="0" max="150" disabled={!kind} value={shown}
+                    onChange={e => { const v = +e.target.value; if (kind === 'selection') ed().featherSelection(v); else if (bake) setFeatherDraft(v); else ed().setEdgeFeather(null, v); }} /><span className="cm-val">{shown}px</span></div>
+                ); })()}
+                {kind === 'layer' && featherMode === 'layer' && (
+                  <button className="cm-btn" style={{ marginTop: 8, width: '100%', justifyContent: 'center' }} disabled={!featherDraft}
+                    onClick={() => { ed().setEdgeFeather(null, featherDraft, { bake: true }); setFeatherDraft(0); }}>Apply to layer</button>
+                )}
+                <div className="cm-note" style={{ marginTop: 8 }}>{!kind ? 'Select an image layer, or draw a marquee/lasso selection, then drag the slider.' : kind === 'selection' ? 'Shows when you copy (⌘J), move or recolor the selection.' : 'Fades the image edges into what is behind it.'}</div>
+                <button className="cm-btn" style={{ marginTop: 8, width: '100%', justifyContent: 'center' }} onClick={() => setFeatherOpen(false)}>Done</button>
+              </div>
+            );
+          })()}
+        </span>
         <span style={{ position: 'relative' }}>
           <button className="cm-btn" onClick={openCanvasSize}>Canvas size</button>
           {csOpen && (
@@ -3111,10 +3842,12 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         </span>
         <div className="cm-zoom-pill">
           <button className="cm-icon-btn" title="Zoom out (−)" onClick={() => setZoomAtCenter(ed().fc.getZoom() * 0.83)}><Icon name="minus" size={14} /></button>
-          <button className="cm-btn cm-zoom-pct" title="Reset to fit" onClick={fitToScreen}>{zoomPct}%</button>
+          <button className="cm-btn cm-zoom-pct" title="Reset to fit" onClick={() => fitAll()}>{zoomPct}%</button>
           <button className="cm-icon-btn" title="Zoom in (+)" onClick={() => setZoomAtCenter(ed().fc.getZoom() * 1.2)}><Icon name="plus" size={14} /></button>
           <span className="cm-zoom-div" />
-          <button className="cm-icon-btn cm-zoom-extra" title="Fit to screen (0)" onClick={fitToScreen}><Icon name="maximize" size={14} /></button>
+          <button className="cm-icon-btn cm-zoom-extra" title="Fit to screen (0)" onClick={() => fitAll()}><Icon name="maximize" size={14} /></button>
+          <span className="cm-zoom-div cm-zoom-extra" />
+          <button className={'cm-icon-btn' + (voiceOn ? ' cm-voice-on' : '')} title='Voice control — say "brush", "undo", "make it red"…' aria-pressed={voiceOn} onClick={toggleVoice}><Icon name="mic" size={14} /></button>
         </div>
         <button className="cm-icon-btn" title={mode_ === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={() => setMode(mode_ === 'dark' ? 'light' : 'dark')}>
           <Icon name={mode_ === 'dark' ? 'sun' : 'moon'} />
@@ -3154,6 +3887,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
               <div className="cm-export-dims">{Math.round(ed().W * exportScale)} × {Math.round(ed().H * exportScale)} px</div>
               <button className="cm-export-menu-item" onClick={() => { const u = ed().exportPNG(exportScale); onExport ? onExport(u) : downloadURL(u, `canvasmith${exportScale === 1 ? '' : '@' + exportScale + 'x'}.png`); setExportOpen(false); }}>⬇ PNG</button>
               <button className="cm-export-menu-item" onClick={() => { const u = ed().exportJPEG(0.92, exportScale); onExport ? onExport(u) : downloadURL(u, `canvasmith${exportScale === 1 ? '' : '@' + exportScale + 'x'}.jpg`); setExportOpen(false); }}>⬇ JPG</button>
+              {frames.length > 1 && <button className="cm-export-menu-item" onClick={() => { exportAllFrames(); setExportOpen(false); }}>⬇ All frames <span className="cm-export-hint">one PNG each</span></button>}
               <button className="cm-export-menu-item" onClick={() => { exportSvg(); setExportOpen(false); }}>⬇ SVG <span className="cm-export-hint">vector</span></button>
               <div className="cm-export-sep" />
               <button className="cm-export-menu-item" onClick={() => { saveProject(); setExportOpen(false); }}>⬇ Project file <span className="cm-export-hint">keeps layers</span></button>
@@ -3231,7 +3965,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         <Icon name="chevron" size={13} />
       </button>
       <div className="cm-left" ref={leftRef}>
-        {!leftCollapsed && (
+        {leftShown && (
           <div className="cm-lp">
             <div className="cm-lp-tabs" role="tablist">
               <button className="cm-lp-tab" role="tab" aria-selected={leftTab === 'layers'} onClick={() => setLeftTab('layers')}><Icon name="layers" size={14} />Layers<span className="cm-lp-count">{layers.length}</span></button>
@@ -3253,7 +3987,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
                   {detectResults.map((b, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 4 }}>
+                    <div key={i} style={{ display: 'flex', gap: 4 }}
+                      onMouseEnter={() => { detectHoverRef.current = b; ed().fc.requestRenderAll(); }}
+                      onMouseLeave={() => { detectHoverRef.current = null; ed().fc.requestRenderAll(); }}>
                       <button className="cm-btn" style={{ flex: 1, minWidth: 0 }} onClick={() => selectDetected(b)}>
                         <Icon name="objectselect" size={13} /> Subject {i + 1}<span className="cm-tag mono" style={{ marginLeft: 'auto' }}>{Math.round(b.w)}×{Math.round(b.h)}</span>
                       </button>
@@ -3312,88 +4048,109 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
           ))}
         </div>
       )}
-      <div className="cm-stage" ref={stageRef}
-        data-dropping={dropping || undefined}
-        onDragEnter={onStageDragEnter} onDragLeave={onStageDragLeave}
-        onDragOver={onStageDragOver} onDrop={(e) => { setDropDepth(0); setDropping(false); onStageDrop(e); }}>
-        <canvas ref={canvasRef} />
-        {perspActive && (
-          <div className="cm-persp-bar" role="toolbar" aria-label="Perspective correction">
-            <Icon name="perspective" size={14} />
-            <span style={{ whiteSpace: 'nowrap' }}>Drag the corners onto edges that should be square</span>
-            <button className="cm-btn cm-persp-apply" onClick={() => ed().applyPerspectiveEdit()}>Apply</button>
-            <button className="cm-btn" onClick={() => ed().resetPerspectiveCorners()}>Reset</button>
-            <button className="cm-btn" onClick={() => ed().cancelPerspectiveEdit()}>Cancel</button>
-          </div>
-        )}
-        {pathEditing && !perspActive && (
-          <div className="cm-persp-bar cm-path-bar" role="toolbar" aria-label="Edit path">
-            <span style={{ display: 'flex', flexShrink: 0 }}><Icon name="pen" size={14} /></span>
-            <span className="cm-path-bar-hint" style={{ whiteSpace: 'nowrap' }}>Drag points &amp; handles · double-click to add / convert · ⌘-drag bends</span>
-            <button className="cm-btn" title="Make the selected points smooth" onClick={() => ed().setPathNodeType('smooth')}>Smooth</button>
-            <button className="cm-btn" title="Make the selected points sharp corners" onClick={() => ed().setPathNodeType('corner')}>Corner</button>
-            <button className="cm-btn" title="Delete the selected points (⌫)" onClick={() => ed().deleteSelectedPathNodes()}>Delete point</button>
-            <button className="cm-btn cm-persp-apply" title="Leave edit mode (Enter)" onClick={() => ed().exitPathEdit()}>Done</button>
-          </div>
-        )}
-        {showExtendBanner && !perspActive && !pathEditing && (
-          <button className="cm-extend-banner" onClick={onExtendBannerClick}>
-            <Icon name="search" size={13} />Background doesn't fill the canvas — AI-extend it
-          </button>
-        )}
-        {reviewOn && reviewHoverPoly && (() => {
-          // Live cutout-preview overlay: dashed lime silhouette over the hovered region box,
-          // showing the exact shape Create/Extract will cut — see reviewHoverMove above. Region
-          // boxes THEMSELVES are real Fabric objects (Fabric renders them natively on <canvas>);
-          // this SVG only draws the one thing Fabric doesn't already show: the precomputed cutout
-          // preview polygon, matching the vanilla demo's #review-hover-preview.
-          const screenPts = reviewHoverPoly.map(sceneToScreen);
-          const xs = screenPts.map(p => p.x), ys = screenPts.map(p => p.y);
-          const minX = Math.min(...xs), minY = Math.min(...ys), maxX = Math.max(...xs), maxY = Math.max(...ys);
-          return (
-            <svg style={{ position: 'absolute', left: minX, top: minY, zIndex: 5, pointerEvents: 'none' }}
-              width={Math.max(1, maxX - minX)} height={Math.max(1, maxY - minY)}>
-              <polygon fill="rgba(212,255,69,.28)" stroke="#d4ff45" strokeWidth="2"
-                points={screenPts.map(p => (p.x - minX) + ',' + (p.y - minY)).join(' ')} />
-            </svg>
-          );
-        })()}
-        {aiInsert && (() => {
-          const p = sceneToScreen(aiInsert.pt);
-          const stageW = stageRef.current ? stageRef.current.clientWidth : 0;
-          const stageH = stageRef.current ? stageRef.current.clientHeight : 0;
-          const left = Math.max(8, Math.min(p.x - 10, stageW - 276));
-          const top = Math.max(8, Math.min(p.y + 12, stageH - 150));
-          return (
-            <React.Fragment>
-              <div style={{ position: 'absolute', left: p.x - 5, top: p.y - 5, width: 10, height: 10, borderRadius: '50%', background: 'var(--cm-accent)', boxShadow: '0 0 0 3px color-mix(in srgb, var(--cm-accent) 35%, transparent)', zIndex: 21, pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', left, top, zIndex: 22, width: 260, background: 'var(--cm-panel)', border: '1px solid var(--cm-line)', borderRadius: 14, padding: 12, boxShadow: '0 8px 24px rgba(0,0,0,.35)' }}>
-                <div className="cm-row" style={{ gap: 6, fontSize: 12.5, fontWeight: 700 }}>
-                  <Icon name="spark" size={13} style={{ color: 'var(--cm-accent)' }} />
-                  <span style={{ flex: 1 }}>{aiInsert.region ? 'Fill the selection with AI' : 'Draw here with AI'}</span>
-                  <button className="cm-icon-btn" title="Close" aria-label="Close" onClick={() => setAiInsert(null)}><Icon name="close" size={12} /></button>
+      <div className="cm-center">
+        <div className="cm-tabbar" role="tablist" aria-label="Open documents">
+          {docTabs.map(d => (
+            <div key={d.id} className="cm-doctab" role="tab" data-on={d.active} aria-selected={d.active} title={d.name + ' \u2014 double-click to rename'}
+              onClick={() => { if (!d.active && docsRef.current) docsRef.current.switchTo(d.id); }}
+              onDoubleClick={() => setRenamingTab(d.id)}
+              onAuxClick={(e) => { if (e.button === 1 && docTabs.length > 1) { e.preventDefault(); closeDocTab(d.id); } }}>
+              {renamingTab === d.id
+                ? <input autoFocus defaultValue={d.name} maxLength={40} onFocus={(e) => e.target.select()} onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); else if (e.key === 'Escape') { e.target.value = d.name; e.target.blur(); } }}
+                    onBlur={(e) => { setRenamingTab(null); if (docsRef.current) docsRef.current.rename(d.id, e.target.value); }} />
+                : <span className="cm-dt-name">{d.name}</span>}
+              {docTabs.length > 1 && (
+                <button className="cm-dt-x" title="Close tab" aria-label={'Close ' + d.name} onClick={(e) => { e.stopPropagation(); closeDocTab(d.id); }}><Icon name="close" size={11} /></button>
+              )}
+            </div>
+          ))}
+          <button className="cm-doctab-add" disabled={docTabs.length >= MAX_DOCS} title={docTabs.length >= MAX_DOCS ? 'Up to ' + MAX_DOCS + ' pages \u2014 close one to add another' : 'New canvas tab'} aria-label="New canvas tab" onClick={() => docsRef.current && docsRef.current.add()}><Icon name="plus" size={14} /></button>
+        </div>
+        <div className="cm-stage" ref={stageRef}
+          data-dropping={dropping || undefined}
+          onDragEnter={onStageDragEnter} onDragLeave={onStageDragLeave}
+          onDragOver={onStageDragOver} onDrop={(e) => { setDropDepth(0); setDropping(false); onStageDrop(e); }}>
+          <canvas ref={canvasRef} />
+          {voiceCap && <div className={'cm-voice-cap' + (voiceCap.err ? ' err' : '')} role="status">{voiceCap.msg}</div>}
+          {perspActive && (
+            <div className="cm-persp-bar" role="toolbar" aria-label="Perspective correction">
+              <Icon name="perspective" size={14} />
+              <span style={{ whiteSpace: 'nowrap' }}>Drag the corners onto edges that should be square</span>
+              <button className="cm-btn cm-persp-apply" onClick={() => ed().applyPerspectiveEdit()}>Apply</button>
+              <button className="cm-btn" onClick={() => ed().resetPerspectiveCorners()}>Reset</button>
+              <button className="cm-btn" onClick={() => ed().cancelPerspectiveEdit()}>Cancel</button>
+            </div>
+          )}
+          {pathEditing && !perspActive && (
+            <div className="cm-persp-bar cm-path-bar" role="toolbar" aria-label="Edit path">
+              <span style={{ display: 'flex', flexShrink: 0 }}><Icon name="pen" size={14} /></span>
+              <span className="cm-path-bar-hint" style={{ whiteSpace: 'nowrap' }}>Drag points &amp; handles · double-click to add / convert · ⌘-drag bends</span>
+              <button className="cm-btn" title="Make the selected points smooth" onClick={() => ed().setPathNodeType('smooth')}>Smooth</button>
+              <button className="cm-btn" title="Make the selected points sharp corners" onClick={() => ed().setPathNodeType('corner')}>Corner</button>
+              <button className="cm-btn" title="Delete the selected points (⌫)" onClick={() => ed().deleteSelectedPathNodes()}>Delete point</button>
+              <button className="cm-btn cm-persp-apply" title="Leave edit mode (Enter)" onClick={() => ed().exitPathEdit()}>Done</button>
+            </div>
+          )}
+          {showExtendBanner && !perspActive && !pathEditing && (
+            <button className="cm-extend-banner" onClick={onExtendBannerClick}>
+              <Icon name="search" size={13} />Background doesn't fill the canvas — AI-extend it
+            </button>
+          )}
+          {reviewOn && reviewHoverPoly && (() => {
+            // Live cutout-preview overlay: dashed lime silhouette over the hovered region box,
+            // showing the exact shape Create/Extract will cut — see reviewHoverMove above. Region
+            // boxes THEMSELVES are real Fabric objects (Fabric renders them natively on <canvas>);
+            // this SVG only draws the one thing Fabric doesn't already show: the precomputed cutout
+            // preview polygon, matching the vanilla demo's #review-hover-preview.
+            const screenPts = reviewHoverPoly.map(sceneToScreen);
+            const xs = screenPts.map(p => p.x), ys = screenPts.map(p => p.y);
+            const minX = Math.min(...xs), minY = Math.min(...ys), maxX = Math.max(...xs), maxY = Math.max(...ys);
+            return (
+              <svg style={{ position: 'absolute', left: minX, top: minY, zIndex: 5, pointerEvents: 'none' }}
+                width={Math.max(1, maxX - minX)} height={Math.max(1, maxY - minY)}>
+                <polygon fill="rgba(212,255,69,.28)" stroke="#d4ff45" strokeWidth="2"
+                  points={screenPts.map(p => (p.x - minX) + ',' + (p.y - minY)).join(' ')} />
+              </svg>
+            );
+          })()}
+          {aiInsert && (() => {
+            const p = sceneToScreen(aiInsert.pt);
+            const stageW = stageRef.current ? stageRef.current.clientWidth : 0;
+            const stageH = stageRef.current ? stageRef.current.clientHeight : 0;
+            const left = Math.max(8, Math.min(p.x - 10, stageW - 276));
+            const top = Math.max(8, Math.min(p.y + 12, stageH - 150));
+            return (
+              <React.Fragment>
+                <div style={{ position: 'absolute', left: p.x - 5, top: p.y - 5, width: 10, height: 10, borderRadius: '50%', background: 'var(--cm-accent)', boxShadow: '0 0 0 3px color-mix(in srgb, var(--cm-accent) 35%, transparent)', zIndex: 21, pointerEvents: 'none' }} />
+                <div style={{ position: 'absolute', left, top, zIndex: 22, width: 260, background: 'var(--cm-panel)', border: '1px solid var(--cm-line)', borderRadius: 14, padding: 12, boxShadow: '0 8px 24px rgba(0,0,0,.35)' }}>
+                  <div className="cm-row" style={{ gap: 6, fontSize: 12.5, fontWeight: 700 }}>
+                    <Icon name="spark" size={13} style={{ color: 'var(--cm-accent)' }} />
+                    <span style={{ flex: 1 }}>{aiInsert.region ? 'Fill the selection with AI' : 'Draw here with AI'}</span>
+                    <button className="cm-icon-btn" title="Close" aria-label="Close" onClick={() => setAiInsert(null)}><Icon name="close" size={12} /></button>
+                  </div>
+                  {aiInsert.region && <div className="cm-note" style={{ fontSize: 10.5, marginBottom: 6 }}>The result is clipped to your selection — the AI draws only inside that shape.</div>}
+                  {aiInsert.msg && <div className="cm-note" style={{ fontSize: 10.5, marginBottom: 6, color: '#e0607a' }}>{aiInsert.msg}</div>}
+                  <input autoFocus style={{ width: '100%', marginTop: 8, boxSizing: 'border-box', background: 'var(--cm-bg)', border: '1px solid var(--cm-line)', borderRadius: 8, color: 'var(--cm-ink)', padding: '7px 9px', fontSize: 12, fontFamily: 'inherit' }}
+                    placeholder={aiInsert.region ? 'Describe what fills this shape…' : 'Describe what to draw here…'}
+                    value={aiInsert.prompt} disabled={aiInsert.busy}
+                    onChange={e => setAiInsert(a => a && ({ ...a, prompt: e.target.value }))}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submitAiInsert(); } else if (e.key === 'Escape') { e.preventDefault(); setAiInsert(null); } }} />
+                  <button className="cm-btn cm-btn-accent" style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
+                    disabled={aiInsert.busy || !aiInsert.prompt.trim()} onClick={submitAiInsert}>
+                    {aiInsert.busy ? 'Generating…' : <React.Fragment><Icon name="spark" size={13} />{aiInsert.region ? 'Generate in selection' : 'Generate here'}</React.Fragment>}
+                  </button>
                 </div>
-                {aiInsert.region && <div className="cm-note" style={{ fontSize: 10.5, marginBottom: 6 }}>The result is clipped to your selection — the AI draws only inside that shape.</div>}
-                {aiInsert.msg && <div className="cm-note" style={{ fontSize: 10.5, marginBottom: 6, color: '#e0607a' }}>{aiInsert.msg}</div>}
-                <input autoFocus style={{ width: '100%', marginTop: 8, boxSizing: 'border-box', background: 'var(--cm-bg)', border: '1px solid var(--cm-line)', borderRadius: 8, color: 'var(--cm-ink)', padding: '7px 9px', fontSize: 12, fontFamily: 'inherit' }}
-                  placeholder={aiInsert.region ? 'Describe what fills this shape…' : 'Describe what to draw here…'}
-                  value={aiInsert.prompt} disabled={aiInsert.busy}
-                  onChange={e => setAiInsert(a => a && ({ ...a, prompt: e.target.value }))}
-                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submitAiInsert(); } else if (e.key === 'Escape') { e.preventDefault(); setAiInsert(null); } }} />
-                <button className="cm-btn cm-btn-accent" style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}
-                  disabled={aiInsert.busy || !aiInsert.prompt.trim()} onClick={submitAiInsert}>
-                  {aiInsert.busy ? 'Generating…' : <React.Fragment><Icon name="spark" size={13} />{aiInsert.region ? 'Generate in selection' : 'Generate here'}</React.Fragment>}
-                </button>
-              </div>
-            </React.Fragment>
-          );
-        })()}
+              </React.Fragment>
+            );
+          })()}
+        </div>
       </div>
       <button className="cm-collapse" data-flip={sideCollapsed} title={sideCollapsed ? 'Show panel' : 'Hide panel'} onClick={() => setSideCollapsed(s => !s)}>
         <Icon name="chevron" size={13} />
       </button>
       <div className="cm-side" ref={sideRef}>
-        {!sideCollapsed && reviewOn && (() => {
+        {sideShown && reviewOn && (() => {
           const ar = activeRegion();
           const polyRegionCount = regionObjects().filter(o => o.type === 'polygon').length;
           const mergeCount = selectedRegions().length;
@@ -3504,7 +4261,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
             </div>
           );
         })()}
-        {!sideCollapsed && !reviewOn && (
+        {sideShown && !reviewOn && (
           <React.Fragment>
             <div className="cm-tabs">
               <button data-on={sideTab === 'layer'} onClick={() => setSideTab('layer')}>Properties</button>
@@ -3517,7 +4274,9 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
             {sideTab === 'layer' && (
               <div>
                 {toolDock}
-                <CanvasSection editor={ed} info={canvasInfo} />
+                {/* Page settings only with nothing selected (Figma): with a layer picked, its own
+                    properties start at the top instead of under the page size and fill. */}
+                {!props.active && <CanvasSection editor={ed} info={canvasInfo} frames={frames} />}
 
                 {!props.active ? (dockOpen ? null : (
                   <React.Fragment>
@@ -3535,7 +4294,14 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                       <strong className="cm-props-title">{props.title}</strong>
                     </div>
+                    {props.iso && (
+                      <div className="cm-iso-bar">
+                        <span>Editing inside <b>{props.iso.name}</b></span>
+                        <button className="cm-chip" title="Back to the whole layer (Esc)" onClick={() => ed().exitIsolation()}>Done</button>
+                      </div>
+                    )}
 
+                    <PropJump show={props.isImage || props.isAdjustment} layerKey={activeLayer && activeLayer.id} />
                     <div className="cm-grp" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>Stacking</div>
                     <div className="cm-row">
                       <button className="cm-icon-btn" title="Bring to front" style={{ width: 'auto', flex: 1 }} onClick={() => stack('top')}><Icon name="stackfront" size={15} /></button>
@@ -3551,6 +4317,28 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                       </div>
                     )}
 
+                    {/* Combine shapes: only with two or more layers selected. An image (or text, a line, a
+                        group) in the selection disables every operation; the four true boolean ops also stay
+                        off until core has a polygon engine (setClipEngine). */}
+                    {props.combine && props.combine.count >= 2 && (
+                      <>
+                        <div className="cm-grp">Combine shapes</div>
+                        <div className="cm-cb-list" role="menu" aria-label="Combine shapes">
+                          {[['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude'], ['flatten', 'Flatten']].map(([op, label]) => {
+                            const on = props.combine.ops[op];
+                            const why = on ? '' : !props.combine.ok ? props.combine.reason : 'The polygon engine isn\u2019t available';
+                            return (
+                              <button key={op} className="cm-cb-item" role="menuitem" disabled={!on} title={on ? label + ' the selected shapes' : why}
+                                onClick={() => { try { ed().combineShapes(op); } catch (err) { toast(err.message); } }}>
+                                <Icon name={op} size={16} /><span>{label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="cm-cb-hint">{props.combine.ok ? (props.combine.engine ? '' : 'The polygon engine isn\u2019t available, so only Flatten works.') : props.combine.reason}</div>
+                      </>
+                    )}
+
                     <div className="cm-grp">Canvas alignment</div>
                     <div className="cm-align">
                       {[
@@ -3563,16 +4351,74 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                       ))}
                     </div>
 
+                    {/* Position/size and blend right after alignment (Figma's order) — on a photo they sat under every adjustment. */}
+                    <div className="cm-grp" id="cm-sec-transform">Transform</div>
+                    <div className="cm-slider-row">Rotation <input type="range" min="0" max="360" value={props.angle} onChange={e => setNumeric({ angle: +e.target.value })} /><span className="cm-val">{Math.round(props.angle)}°</span></div>
+                    <div className="cm-field-grid">
+                      <label className="cm-field">X <input type="number" value={props.x} onChange={e => setNumeric({ x: +e.target.value })} /></label>
+                      <label className="cm-field">Y <input type="number" value={props.y} onChange={e => setNumeric({ y: +e.target.value })} /></label>
+                    </div>
+                    <div className="cm-field-grid">
+                      <label className="cm-field">W <input type="number" value={props.w} onChange={e => setNumeric({ w: +e.target.value }, { keepRatio })} /></label>
+                      <label className="cm-field">H <input type="number" value={props.h} onChange={e => setNumeric({ h: +e.target.value }, { keepRatio })} /></label>
+                    </div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 7, margin: '2px 0 8px', fontSize: 12, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={keepRatio} onChange={e => setKeepRatio(e.target.checked)} />
+                      <span>Keep proportions</span>
+                    </label>
+                    <div className="cm-field-grid">
+                      <label className="cm-field">Skew X <input type="number" value={props.skewX} onChange={e => setNumeric({ skewX: +e.target.value })} /></label>
+                      <label className="cm-field">Skew Y <input type="number" value={props.skewY} onChange={e => setNumeric({ skewY: +e.target.value })} /></label>
+                    </div>
+                    <div className="cm-row" style={{ marginTop: 8 }}>
+                      <button className="cm-btn" onClick={() => flip('x')}><Icon name="flip" size={13} /> Flip H</button>
+                      <button className="cm-btn" onClick={() => flip('y')}><Icon name="flip" size={13} style={{ transform: 'rotate(90deg)' }} /> Flip V</button>
+                    </div>
+                    <div className="cm-row" style={{ marginTop: 6 }}>
+                      <button className="cm-btn" onClick={centerH}><Icon name="move" size={13} /> Center H</button>
+                      <button className="cm-btn" onClick={centerV}><Icon name="move" size={13} /> Center V</button>
+                    </div>
+
+                    {props.isRect && (
+                      <div>
+                        <div className="cm-grp">Corner radius</div>
+                        <div className="cm-slider-row">Radius <input type="range" min="0" max={Math.max(1, Math.round(Math.min(props.w, props.h) / 2))} value={props.rx} onChange={e => setNumeric({ rx: +e.target.value }, { live: true })} /><span className="cm-val">{props.rx}px</span></div>
+                      </div>
+                    )}
+
+                    <div className="cm-grp">Blend &amp; opacity</div>
+                    <BlendPicker value={props.blend} onPick={setBlend} preview={() => activeLayer ? ed().blendPreview(activeLayer.id) : null} />
+                    <div className="cm-slider-row">Opacity <input type="range" min="0" max="1" step="0.05" value={props.opacity} onChange={e => setOpacity(+e.target.value)} /><span className="cm-val">{Math.round(props.opacity * 100)}%</span></div>
+
+                    {props.canFeather && (
+                      <div>
+                        <div className="cm-grp">Edge feather</div>
+                        <div className="cm-slider-row" title="Fade the layer's outline into what's behind it (Photoshop's Feather)">Feather <input type="range" min="0" max="150" value={props.edgeFeather} onChange={e => ed().setEdgeFeather(null, +e.target.value)} /><span className="cm-val">{props.edgeFeather}px</span></div>
+                      </div>
+                    )}
+
+                    <div className="cm-grp" id="cm-sec-shadow">Shadow</div>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                      <input type="color" value={props.shadow.color} title="Shadow colour" onChange={e => setShadow({ color: e.target.value })} />
+                      <div className="cm-slider-row" style={{ flex: 1, marginTop: 0 }}>Blur <input type="range" min="0" max="60" value={props.shadow.blur} onChange={e => setShadow({ blur: +e.target.value })} /><span className="cm-val">{Math.round(props.shadow.blur || 0)}px</span></div>
+                    </div>
+                    <div className="cm-field-grid">
+                      <label className="cm-field">Offset X <input type="number" value={props.shadow.offsetX} onChange={e => setShadow({ offsetX: +e.target.value })} /></label>
+                      <label className="cm-field">Offset Y <input type="number" value={props.shadow.offsetY} onChange={e => setShadow({ offsetY: +e.target.value })} /></label>
+                    </div>
+                    <button className="cm-btn" style={{ width: '100%', justifyContent: 'center', marginTop: 8 }} onClick={clearShadow}>Clear shadow</button>
+
+
                     {(props.isImage || props.isAdjustment) && (
                       <React.Fragment>
-                        <div className="cm-grp">{props.isAdjustment ? 'Adjustment layer' : 'Adjust'}</div>
+                        <div className="cm-grp" id="cm-sec-adjust">{props.isAdjustment ? 'Adjustment layer' : 'Adjust'}</div>
                         {props.isAdjustment && <div className="cm-note" style={{ marginTop: 0 }}>Affects every layer below this one in the stack.</div>}
                         {ADJUST_CONTROLS.map((c, i) => (
                           <React.Fragment key={c.key}>
                             {c.group !== (ADJUST_CONTROLS[i - 1] || {}).group && <div className="cm-subgrp">{c.group}</div>}
                             <div className="cm-adj-row" title={c.label + ' — double-click to reset'} onDoubleClick={() => setAdjust({ [c.key]: FX_DEFAULTS[c.key] })}>
                               <Icon name={c.icon} size={13} />
-                              <span className="lbl">{c.label}</span>
+                              <span className="lbl">{c.short || c.label}</span>
                               <input type="range" aria-label={c.label} min={c.min} max={c.max} step={c.step} value={props.fx[c.key]}
                                 style={c.track ? { '--cm-track': c.track } : undefined}
                                 onChange={e => setAdjust({ [c.key]: +e.target.value }, true)} onPointerUp={commitAdjust} onKeyUp={commitAdjust} />
@@ -3591,6 +4437,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                           {props.fx.hsl && <span className="dot" title="Color mixer active" />}
                         </button>
                         {showHsl && <HslMixer hsl={props.fx.hsl} onChange={(hsl, live) => setAdjust({ hsl }, live)} onCommit={commitAdjust} />}
+                        {props.isImage && !props.isAdjustment && <MatchColorRow editor={ed} layerId={activeLayer && activeLayer.id} layers={layers} match={props.fx.match} />}
                         <label className="cm-adj-check-row">
                           <Icon name="invert" size={13} /> Invert
                           <input type="checkbox" className="cm-adj-check" checked={!!props.fx.invert} onChange={e => setAdjust({ invert: e.target.checked })} />
@@ -3600,7 +4447,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                         </button>
                         {props.isImage && !props.isAdjustment && (
                           <React.Fragment>
-                            <div className="cm-grp">Geometry</div>
+                            <div className="cm-grp" id="cm-sec-geometry">Geometry</div>
                             {GEOMETRY_CONTROLS.map(c => (
                               <div key={c.key} className="cm-adj-row" title={c.label + ' — double-click to reset'} onDoubleClick={() => setGeom({ [c.key]: 0 })}>
                                 <Icon name={c.icon} size={13} />
@@ -3622,7 +4469,8 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                     {props.text && (
                       <React.Fragment>
                         <div className="cm-grp">Typography</div>
-                        <FontPicker value={props.text.fontFamily} onPick={v => setText({ fontFamily: v })} />
+                        <FontPicker value={props.text.fontFamily} onPick={v => setText({ fontFamily: v })}
+                          onAdded={css => { edRef.current && edRef.current.refreshFonts(); setText({ fontFamily: css }); toast('Font added'); }} onError={toast} />
                         <div className="cm-field-grid">
                           <label className="cm-field">Size <input type="number" min="1" max="800" value={props.text.fontSize} onChange={e => setText({ fontSize: Math.max(1, +e.target.value) })} /></label>
                           <label className="cm-field">Weight
@@ -3636,12 +4484,12 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                           <button className="cm-icon-btn" data-active={props.text.fontStyle === 'italic'} title="Italic" onClick={() => setText({ fontStyle: props.text.fontStyle === 'italic' ? 'normal' : 'italic' })}><i>I</i></button>
                           <button className="cm-icon-btn" data-active={props.text.underline} title="Underline" onClick={() => setText({ underline: !props.text.underline })}><u>U</u></button>
                           <button className="cm-icon-btn" data-active={props.text.linethrough} title="Strikethrough" onClick={() => setText({ linethrough: !props.text.linethrough })}><s>S</s></button>
-                          <button className="cm-icon-btn" data-active={props.text.textAlign === 'left'} title="Align left" onClick={() => setText({ textAlign: 'left' })}><Icon name="align-left" size={14} /></button>
-                          <button className="cm-icon-btn" data-active={props.text.textAlign === 'center'} title="Align center" onClick={() => setText({ textAlign: 'center' })}><Icon name="align-h-center" size={14} /></button>
-                          <button className="cm-icon-btn" data-active={props.text.textAlign === 'right'} title="Align right" onClick={() => setText({ textAlign: 'right' })}><Icon name="align-right" size={14} /></button>
+                          <button className="cm-icon-btn" data-active={props.text.textAlign === 'left'} title="Align text left" onClick={() => setText({ textAlign: 'left' })}><Icon name="text-left" size={14} /></button>
+                          <button className="cm-icon-btn" data-active={props.text.textAlign === 'center'} title="Align text center" onClick={() => setText({ textAlign: 'center' })}><Icon name="text-center" size={14} /></button>
+                          <button className="cm-icon-btn" data-active={props.text.textAlign === 'right'} title="Align text right" onClick={() => setText({ textAlign: 'right' })}><Icon name="text-right" size={14} /></button>
                         </div>
-                        <div className="cm-slider-row">Line height <input type="range" min="0.8" max="2.5" step="0.05" value={props.text.lineHeight} onChange={e => setText({ lineHeight: +e.target.value })} /></div>
-                        <div className="cm-slider-row">Letter spacing <input type="range" min="-100" max="800" step="10" value={props.text.charSpacing} onChange={e => setText({ charSpacing: +e.target.value })} /></div>
+                        <div className="cm-slider-row">Line height <input type="range" min="0.8" max="2.5" step="0.05" value={props.text.lineHeight} onChange={e => setText({ lineHeight: +e.target.value })} /><span className="cm-val">{(+props.text.lineHeight || 0).toFixed(2)}</span></div>
+                        <div className="cm-slider-row">Letter spacing <input type="range" min="-100" max="800" step="10" value={props.text.charSpacing} onChange={e => setText({ charSpacing: +e.target.value })} /><span className="cm-val">{((+props.text.charSpacing || 0) / 1000).toFixed(2)}em</span></div>
                       </React.Fragment>
                     )}
 
@@ -3669,7 +4517,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                               <PaintEye hidden={props.fillOff} what="fill" onToggle={show => ed().setFillVisible(show)} />
                             </div>
                             {props.shapeGradient.type === 'linear' && (
-                              <div className="cm-slider-row">Angle <input type="range" min="0" max="360" value={fgAngle} onChange={e => setShapeGradientPatch({ angle: +e.target.value })} /></div>
+                              <div className="cm-slider-row">Angle <input type="range" min="0" max="360" value={fgAngle} onChange={e => setShapeGradientPatch({ angle: +e.target.value })} /><span className="cm-tag mono">{Math.round(fgAngle)}°</span></div>
                             )}
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
                               {props.shapeGradient.stops.map((stop, i) => (
@@ -3764,52 +4612,6 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                       </React.Fragment>
                     )}
 
-                    {props.isRect && (
-                      <div>
-                        <div className="cm-grp">Corner radius</div>
-                        <div className="cm-slider-row">Radius <input type="range" min="0" max={Math.max(1, Math.round(Math.min(props.w, props.h) / 2))} value={props.rx} onChange={e => setNumeric({ rx: +e.target.value }, { live: true })} /><span className="cm-val">{props.rx}px</span></div>
-                      </div>
-                    )}
-
-                    <div className="cm-grp">Blend &amp; opacity</div>
-                    <select className="cm-select" value={props.blend} onChange={e => setBlend(e.target.value)}>
-                      {BLEND_MODES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                    </select>
-                    <div className="cm-slider-row">Opacity <input type="range" min="0" max="1" step="0.05" value={props.opacity} onChange={e => setOpacity(+e.target.value)} /><span className="cm-val">{Math.round(props.opacity * 100)}%</span></div>
-
-                    <div className="cm-grp">Transform</div>
-                    <div className="cm-slider-row">Rotation <input type="range" min="0" max="360" value={props.angle} onChange={e => setNumeric({ angle: +e.target.value })} /><span className="cm-val">{Math.round(props.angle)}°</span></div>
-                    <div className="cm-field-grid">
-                      <label className="cm-field">X <input type="number" value={props.x} onChange={e => setNumeric({ x: +e.target.value })} /></label>
-                      <label className="cm-field">Y <input type="number" value={props.y} onChange={e => setNumeric({ y: +e.target.value })} /></label>
-                    </div>
-                    <div className="cm-field-grid">
-                      <label className="cm-field">W <input type="number" value={props.w} onChange={e => setNumeric({ w: +e.target.value })} /></label>
-                      <label className="cm-field">H <input type="number" value={props.h} onChange={e => setNumeric({ h: +e.target.value })} /></label>
-                    </div>
-                    <div className="cm-field-grid">
-                      <label className="cm-field">Skew X <input type="number" value={props.skewX} onChange={e => setNumeric({ skewX: +e.target.value })} /></label>
-                      <label className="cm-field">Skew Y <input type="number" value={props.skewY} onChange={e => setNumeric({ skewY: +e.target.value })} /></label>
-                    </div>
-                    <div className="cm-row" style={{ marginTop: 8 }}>
-                      <button className="cm-btn" onClick={() => flip('x')}><Icon name="flip" size={13} /> Flip H</button>
-                      <button className="cm-btn" onClick={() => flip('y')}><Icon name="flip" size={13} style={{ transform: 'rotate(90deg)' }} /> Flip V</button>
-                    </div>
-                    <div className="cm-row" style={{ marginTop: 6 }}>
-                      <button className="cm-btn" onClick={centerH}><Icon name="move" size={13} /> Center H</button>
-                      <button className="cm-btn" onClick={centerV}><Icon name="move" size={13} /> Center V</button>
-                    </div>
-
-                    <div className="cm-grp">Shadow</div>
-                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                      <input type="color" value={props.shadow.color} title="Shadow colour" onChange={e => setShadow({ color: e.target.value })} />
-                      <div className="cm-slider-row" style={{ flex: 1, marginTop: 0 }}>Blur <input type="range" min="0" max="60" value={props.shadow.blur} onChange={e => setShadow({ blur: +e.target.value })} /></div>
-                    </div>
-                    <div className="cm-field-grid">
-                      <label className="cm-field">Offset X <input type="number" value={props.shadow.offsetX} onChange={e => setShadow({ offsetX: +e.target.value })} /></label>
-                      <label className="cm-field">Offset Y <input type="number" value={props.shadow.offsetY} onChange={e => setShadow({ offsetY: +e.target.value })} /></label>
-                    </div>
-                    <button className="cm-btn" style={{ width: '100%', justifyContent: 'center', marginTop: 8 }} onClick={clearShadow}>Clear shadow</button>
                   </React.Fragment>
                 )}
               </div>
@@ -3837,7 +4639,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   <button className="cm-chip" onClick={() => addCentred('text')}><Icon name="type" size={12} /><span>Text</span></button>
                   <button className="cm-chip" onClick={() => addCentred('rect')}><Icon name="rect" size={12} /><span>Box</span></button>
-                  <button className="cm-chip" onClick={() => addCentred('ellipse')}><Icon name="hoverselect" size={12} /><span>Circle</span></button>
+                  <button className="cm-chip" onClick={() => addCentred('ellipse')}><Icon name="ellipse" size={12} /><span>Circle</span></button>
                   <button className="cm-chip" onClick={addImagePick}><Icon name="image" size={12} /><span>Image</span></button>
                   <button className="cm-chip" onClick={() => ed().setTool('brush')}><Icon name="layerstab" size={12} /><span>Paint Layer</span></button>
                 </div>
@@ -3846,7 +4648,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                 <div className="cm-grp">Ad copy</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   <button className="cm-chip" onClick={() => { ed().addCTA(null, { text: 'Shop now' }); ed().setTool('select'); }}><Icon name="spark" size={12} /><span>CTA</span></button>
-                  <button className="cm-chip" onClick={() => { ed().addBadge(null, { text: 'Sale' }); ed().setTool('select'); }}><Icon name="hoverselect" size={12} /><span>Badge</span></button>
+                  <button className="cm-chip" onClick={() => { ed().addBadge(null, { text: 'Sale' }); ed().setTool('select'); }}><Icon name="star" size={12} /><span>Badge</span></button>
                   <button className="cm-chip" onClick={() => { ed().addPrice(null, { current: '$29', original: '$40', save: 'Save 27%' }); ed().setTool('select'); }}><Icon name="tag" size={12} /><span>Price</span></button>
                   <button className="cm-chip" onClick={() => { ed().addBrandLockup(null, { text: 'Brand' }); ed().setTool('select'); }}><Icon name="box" size={12} /><span>Brand</span></button>
                 </div>
@@ -3859,7 +4661,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                         <div key={a.id} className="cm-asset-thumb" title={'Drag onto the canvas, or click to add · ' + a.name}
                           draggable
                           onDragStart={e => { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/x-canvasmith-asset', a.src); e.dataTransfer.setData('text/plain', a.src); }}
-                          onClick={() => ed().addImage(a.src)}>
+                          onClick={() => ed().addImage(a.src, { name: imageLayerName(a.name) })}>
                           <img src={a.src} alt="" />
                           <span>{a.name}</span>
                         </div>
@@ -3872,7 +4674,11 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
 
             {sideTab === 'stickers' && (
               <div>
-                <div className="cm-grp" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>Stickers</div>
+                <div className="cm-seg" role="tablist" style={{ marginBottom: 12 }}>
+                  <button className="cm-btn" role="tab" aria-selected={stickerView === 'shapes'} data-on={stickerView === 'shapes'} onClick={() => setStickerView('shapes')}>Shapes</button>
+                  <button className="cm-btn" role="tab" aria-selected={stickerView === 'icons'} data-on={stickerView === 'icons'} onClick={() => setStickerView('icons')}>Icons</button>
+                </div>
+                {stickerView === 'icons' ? <IconLibrary getEditor={ed} onError={toast} /> : (<>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
                   {STICKER_GROUPS.map((g, i) => (
                     <button key={g.label} className="cm-chip" data-on={i === stickerCat} onClick={() => setStickerCat(i)}>{g.label}</button>
@@ -3880,11 +4686,12 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                 </div>
                 <div className="cm-sticker-grid">
                   {(STICKER_GROUPS[stickerCat] || STICKER_GROUPS[0]).keys.map(key => (
-                    <button key={key} title={key} className="cm-sticker-thumb" onClick={() => ed().addSticker(key)}>
+                    <button key={key} title={stickerLabel(key)} aria-label={stickerLabel(key)} className="cm-sticker-thumb" onClick={() => ed().addSticker(key)}>
                       <StickerPreview shapeKey={key} neutral />
                     </button>
                   ))}
                 </div>
+                </>)}
               </div>
             )}
 
@@ -3999,13 +4806,13 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
         <ScrollCue within={sideRef} />
       </div>
       {compareOpen && (
-        <div className="cm-compare-backdrop">
+        <div className="cm-compare-backdrop" ref={compareRef} role="dialog" aria-modal="true" aria-labelledby="cm-compare-title">
           <div className="cm-compare-header">
             <div>
-              <strong>Compare</strong>
+              <strong id="cm-compare-title">Compare</strong>
               <p>Compare your edited canvas with the first version you opened</p>
             </div>
-            <button className="cm-btn" onClick={closeCompare}><Icon name="close" size={14} />Close</button>
+            <button className="cm-btn cm-compare-close" onClick={closeCompare}><Icon name="close" size={14} />Close</button>
           </div>
           <div className="cm-compare-panes">
             <div className="cm-compare-pane"><span className="cm-compare-label">Original</span><img src={compareSnapshotRef.current} alt="Original" /></div>

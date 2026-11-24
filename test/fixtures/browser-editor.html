@@ -11,8 +11,8 @@
 <body>
 <canvas id="cv"></canvas>
 <script type="module">
-  import { Editor, installKeybindings, installAutosave, restoreSession, readSession, clearSession } from '/packages/core/src/index.js';
-  window.__Editor = Editor;
+  import { Editor, installKeybindings, installAutosave, restoreSession, readSession, clearSession, DocumentSet, setClipEngine, resetClipEngine, objectRings, combineRings, trapDialog } from '/packages/core/src/index.js';
+  window.__trapDialog = trapDialog; window.__Editor = Editor; window.__DocumentSet = DocumentSet; window.__setClipEngine = setClipEngine; window.__resetClipEngine = resetClipEngine; window.__booleans = { objectRings, combineRings };
   window.__session = { installAutosave, restoreSession, readSession, clearSession };
   window.__ed = new Editor({ fabric: window.fabric, canvasEl: document.getElementById('cv'), width: 400, height: 300 });
   window.__stopKeys = installKeybindings(window.__ed);

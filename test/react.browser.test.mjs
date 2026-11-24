@@ -308,7 +308,7 @@ test('react: dragging one layer row onto another reorders the stack via reorderL
 });
 
 /* ── border/stroke controls: previously present in the vanilla demo only ────────────────────── */
-test('react: the Layer tab shows a Border section for a shape, with a colour swatch that appears only once width > 0', async () => {
+test('react: the Layer tab shows a Border section for a shape; its colour is always offered and picking one gives a borderless shape a visible border', async () => {
   await ed(() => window.__mounted.editor().setTool('rect'));
   const box = await canvasBox();
   await page.mouse.move(box.x + 50, box.y + 50);
@@ -319,15 +319,17 @@ test('react: the Layer tab shows a Border section for a shape, with a colour swa
   await page.locator('button:has-text("Properties")').first().click();
   await page.waitForTimeout(150);
   assert.ok(await page.locator('.cm-grp:has-text("Border")').count() > 0);
-  // width still 0 -> no colour swatch row yet
-  const colorInputsBefore = await page.locator('input[type=color][title="Border colour"]').count();
-  assert.equal(colorInputsBefore, 0);
+  // the colour is offered even at width 0 (the panel no longer hides it until a width is set)...
+  const swatch = page.locator('input[type=color][title="Border colour"]');
+  assert.equal(await swatch.count(), 1);
+  // ...and picking one on a borderless shape gives it a visible 2px border instead of a silent no-op
+  await swatch.fill('#ff0000');
+  await page.waitForTimeout(100);
+  const after = await ed(() => { const o = window.__mounted.editor().fc.getActiveObject(); return { w: o.strokeWidth, c: o.stroke }; });
+  assert.equal(after.w, 2); assert.equal(String(after.c).toLowerCase(), '#ff0000');
   await ed(() => window.__mounted.editor().setStroke({ width: 6 }));
   await page.waitForTimeout(100);
-  const colorInputsAfter = await page.locator('input[type=color][title="Border colour"]').count();
-  assert.equal(colorInputsAfter, 1);
-  const width = await ed(() => window.__mounted.editor().fc.getActiveObject().strokeWidth);
-  assert.equal(width, 6);
+  assert.equal(await ed(() => window.__mounted.editor().fc.getActiveObject().strokeWidth), 6);
 });
 
 test('react: Border style / dash / position / caps controls drive setStroke and hide when they don\'t apply', async () => {
@@ -1159,11 +1161,14 @@ test('react: with an AI key, "Remove BG offline" cuts out locally; the mask bann
   await ed((id) => window.__mounted.editor().enterMaskEdit(id), id);
   const keep = page.locator('[role=group][aria-label="Touch-up brush"] button', { hasText: 'Keep' });
   await keep.waitFor({ timeout: 10000 });
-  await keep.click();
+  // a cut-out opens on Keep — never with neither touch-up brush picked
   assert.equal(await keep.getAttribute('aria-pressed'), 'true');
   assert.equal(await ed(() => window.__mounted.editor().toolOpts.maskRefine), 'keep');
   await keep.click();   // pressing it again goes back to plain mask painting
   assert.equal(await ed(() => window.__mounted.editor().toolOpts.maskRefine), null);
+  await keep.click();
+  assert.equal(await keep.getAttribute('aria-pressed'), 'true');
+  assert.equal(await ed(() => window.__mounted.editor().toolOpts.maskRefine), 'keep');
 });
 
 /* ── overlays only draw for on-screen renders: a pick's offscreen capture (zoom reset to 100%)
@@ -1227,4 +1232,158 @@ test('react: right-clicking a layer opens the context menu and its items work', 
   assert.equal(await page.locator('.cmx').count(), 2, 'submenu opens on hover');
   await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
   assert.equal(await page.locator('.cmx').count(), 0);
+});
+
+/* ── multi-document tabs ─────────────────────────────────────────────────────────────── */
+test('react: canvas tabs — + opens a blank one at the host size, tabs switch, rename, close, and survive a reload', async () => {
+  const tabs = () => page.$$eval('.cm-doctab', els => els.map(e => e.textContent.trim() + (e.dataset.on === 'true' ? '*' : '')));
+  assert.deepEqual(await tabs(), ['Untitled 1*']);
+  assert.equal(await page.locator('.cm-dt-x').count(), 0, 'a lone tab has nothing to close');
+
+  await ed(() => window.__mounted.editor().addBadge());
+  await page.locator('.cm-doctab-add').click();
+  await page.waitForFunction(() => document.querySelectorAll('.cm-doctab').length === 2);
+  assert.deepEqual(await tabs(), ['Untitled 1', 'Untitled 2*']);
+  assert.deepEqual(await ed(() => { const e = window.__mounted.editor(); return [e.W, e.H, e.fc.getObjects().length]; }), [400, 300, 0]);
+
+  await page.locator('.cm-doctab').first().click();
+  await page.waitForFunction(() => window.__mounted.editor().fc.getObjects().length === 1);
+
+  await page.locator('.cm-doctab').first().dblclick();
+  await page.keyboard.type('Hero');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('.cm-doctab .cm-dt-name').textContent === 'Hero');
+
+  // Survives a reload: the tab list and each tab's own document come back.
+  await page.waitForTimeout(1500);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll('.cm-doctab').length === 2, null, { timeout: 15000 });
+  assert.deepEqual(await tabs(), ['Hero*', 'Untitled 2']);
+
+  page.once('dialog', d => d.accept());
+  await page.locator('.cm-doctab').nth(1).locator('.cm-dt-x').click();
+  await page.waitForFunction(() => document.querySelectorAll('.cm-doctab').length === 1);
+});
+
+/* ── frames ──────────────────────────────────────────────────────────────────────────── */
+test('react: frames — add, switch via the Layers folders, rename in the Frame field, delete, and they survive a reload', async () => {
+  const names = () => page.$$eval('.cm-frame-head .cm-fh-name', els => els.length);
+  const field = () => page.locator('.cm-fr-field input');
+  assert.equal(await field().inputValue(), 'Frame 1');
+  assert.equal(await page.locator('.cm-frame-del').isDisabled(), true, 'a lone frame cannot be deleted');
+
+  await ed(() => { const e = window.__mounted.editor(); e.addBadge(); e.fc.discardActiveObject(); e.fc.renderAll(); });   // the Frame section is page settings: shown with nothing selected
+  await page.locator('.cm-frame-add').click();
+  await page.waitForFunction(() => document.querySelectorAll('.cm-frame-head').length === 2);
+  assert.equal(await field().inputValue(), 'Frame 2');
+  assert.equal(await page.locator('.cm-canvas-sec .aside').first().textContent(), '2 of 2');
+  assert.equal(await ed(() => window.__mounted.editor().fc.getObjects().length), 1, 'the other frame\'s layer stays on the page');
+  // The Layers panel groups by frame: one folder per frame, the first frame's badge nested in the first.
+  assert.equal(await page.locator('.cm-frame-head').first().locator('.cm-fh-count').textContent(), '1');
+
+  await page.locator('.cm-frame-head').first().click();
+  await page.waitForFunction(() => document.querySelector('.cm-fr-field input').value === 'Frame 1');
+
+  await field().click();
+  await field().fill('Hero');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('.cm-frame-head .cm-fh-name').textContent === 'Hero');
+
+  await page.waitForTimeout(1500);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll('.cm-frame-head').length === 2, null, { timeout: 15000 });
+  assert.equal(await field().inputValue(), 'Hero');
+
+  page.once('dialog', d => d.accept());                      // Hero holds the badge, so deleting asks first
+  await page.locator('.cm-frame-del').click();
+  await page.waitForFunction(() => window.__mounted.editor().frameList().length === 1);
+  assert.equal(await ed(() => window.__mounted.editor().fc.getObjects().length), 0);
+});
+
+/* ── combine shapes ──────────────────────────────────────────────────────────────────── */
+test('react: Combine shapes appears with 2+ layers selected, is fully disabled when an image is among them, and Union merges shapes', async () => {
+  const items = () => page.$$eval('.cm-cb-item', els => els.map(e => e.textContent.trim() + (e.disabled ? ':off' : ':on')));
+  const select = (withImage) => ed((withImage) => {
+    const e = window.__mounted.editor(), F = window.fabric, fc = e.fc;
+    const mk = (o, role, kind) => { o.set({ id: 'o' + Math.random().toString(36).slice(2, 7), role, shapeKind: kind }); fc.add(o); return o; };
+    if (!fc.getObjects().length) {
+      mk(new F.Rect({ left: 40, top: 40, width: 120, height: 90, fill: '#e53935' }), 'shape', 'rect');
+      mk(new F.Ellipse({ left: 110, top: 80, rx: 60, ry: 50, fill: '#1e88e5' }), 'shape', 'ellipse');
+    }
+    if (withImage) { const c = document.createElement('canvas'); c.width = c.height = 20; c.getContext('2d').fillRect(0, 0, 20, 20); mk(new F.Image(c, { left: 250, top: 40 }), 'image'); }
+    e.commit('setup'); fc.discardActiveObject();
+    fc.setActiveObject(new F.ActiveSelection(fc.getObjects().slice(), { canvas: fc })); fc.fire('selection:created', { selected: [] }); fc.renderAll();
+  }, withImage);
+
+  await select(false);
+  await page.waitForSelector('.cm-cb-item');
+  assert.deepEqual(await items(), ['Union:on', 'Subtract:on', 'Intersect:on', 'Exclude:on', 'Flatten:on']);
+
+  await page.locator('.cm-cb-item', { hasText: 'Union' }).click();
+  await page.waitForFunction(() => window.__mounted.editor().fc.getObjects().length === 1);
+  assert.equal(await ed(() => window.__mounted.editor().fc.getObjects()[0].name), 'Union');
+  assert.equal(await ed(() => window.__mounted.editor().fc.getObjects()[0].type), 'path');
+  assert.equal(await page.locator('.cm-cb-item').count(), 0, 'one layer selected: nothing to combine');
+
+  await select(true);                                         // a path + an image
+  await page.waitForSelector('.cm-cb-item');
+  assert.deepEqual(await items(), ['Union:off', 'Subtract:off', 'Intersect:off', 'Exclude:off', 'Flatten:off'], 'an image disables every operation');
+  assert.match(await page.locator('.cm-cb-hint').textContent(), /Images/);
+});
+
+test('react: Adjust ▸ Match color lists the other photos, applies on pick, adjusts with Amount, and clears with None', async () => {
+  const photo = (col) => { const c = document.createElement('canvas'); c.width = 60; c.height = 60; const g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 60, 0); gr.addColorStop(0, col[0]); gr.addColorStop(1, col[1]); g.fillStyle = gr; g.fillRect(0, 0, 60, 60); return c.toDataURL('image/png'); };
+  await page.evaluate(async ([a, b]) => { const e = window.__mounted.editor(); e.fc.clear(); await e.addImage(a, { name: 'Cold' }); await e.addImage(b, { name: 'Warm' }); },
+    [await page.evaluate(photo, ['#203040', '#406080']), await page.evaluate(photo, ['#c08040', '#f0c070'])].map(x => x));
+  await page.waitForTimeout(500);
+  const sel = page.locator('select[aria-label="Match color to layer"]');
+  assert.deepEqual(await sel.locator('option').allTextContents(), ['None', 'Cold'], 'lists the other photo, never the selected one');
+  const state = () => page.evaluate(() => { const e = window.__mounted.editor(), o = e.fc.getObjects().find(x => x.name === 'Warm'); return o.fx && o.fx.match ? { amount: o.fx.match.amount, ref: !!o.fx.match.ref } : null; });
+  assert.equal(await state(), null);
+  await sel.selectOption({ label: 'Cold' }); await page.waitForTimeout(400);
+  assert.deepEqual(await state(), { amount: 1, ref: true });
+  const amt = page.locator('input[aria-label="Match color amount"]');
+  assert.equal(await amt.isVisible(), true, 'Amount appears once a reference is chosen');
+  await amt.evaluate((r) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(r, '35'); r.dispatchEvent(new Event('input', { bubbles: true })); r.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })); });
+  await page.waitForTimeout(400);
+  assert.equal((await state()).amount, 0.35);
+  await sel.selectOption(''); await page.waitForTimeout(300);
+  assert.equal(await state(), null, 'None clears it'); assert.equal(await amt.count(), 0, 'Amount hides again');
+});
+
+test('react: Cmd/Ctrl+1 is actual size and Ctrl+/- zoom the canvas; Compare is a real dialog (focus in, Tab trapped, focus restored); a photo gets jump chips', async () => {
+  await page.evaluate(async () => { const e = window.__mounted.editor(); e.fc.clear(); const c = document.createElement('canvas'); c.width = 80; c.height = 60; c.getContext('2d').fillRect(0, 0, 80, 60); await e.addImage(c.toDataURL()); });
+  await page.waitForTimeout(600);
+  const zoom = () => page.evaluate(() => Math.round(window.__mounted.editor().fc.getZoom() * 100));
+  const fit = await zoom();
+  await page.keyboard.press('Control+='); await page.waitForTimeout(150); assert.ok(await zoom() > fit, 'Ctrl+= zooms in');
+  await page.keyboard.press('Control+1'); await page.waitForTimeout(150); assert.equal(await zoom(), 100, 'Ctrl+1 is actual size');
+  await page.keyboard.press('Control+-'); await page.waitForTimeout(150); assert.ok(await zoom() < 100, 'Ctrl+- zooms out');
+  assert.deepEqual(await page.$$eval('.cm-prop-jump button', b => b.map(x => x.textContent)), ['Transform', 'Shadow', 'Adjust', 'Geometry']);
+  await page.click('.cm-prop-jump button:has-text("Adjust")'); await page.waitForTimeout(700);
+  assert.ok(await page.evaluate(() => { const h = document.getElementById('cm-sec-adjust'), c = h.closest('.cm-side-body').getBoundingClientRect(); const t = h.getBoundingClientRect().top - c.top; return t >= 0 && t < 120; }), 'the Adjust heading is scrolled to the top of the panel');
+  await page.evaluate(async () => { const e = window.__mounted.editor(); /* compare needs a snapshot: make an edit */ e.fc.getObjects()[0] && e.setImageFilters({ saturate: 130 }); });
+  const btn = page.locator('button:has-text("Compare")'); await btn.click(); await page.waitForTimeout(400);
+  const dlg = page.locator('.cm-compare-backdrop');
+  assert.equal(await dlg.getAttribute('role'), 'dialog'); assert.equal(await dlg.getAttribute('aria-modal'), 'true');
+  assert.ok(await page.evaluate(() => document.querySelector('.cm-compare-backdrop').contains(document.activeElement)), 'focus moved into the dialog');
+  for (let i = 0; i < 3; i++) { await page.keyboard.press('Tab'); assert.ok(await page.evaluate(() => document.querySelector('.cm-compare-backdrop').contains(document.activeElement)), 'Tab stays inside the dialog'); }
+  await page.keyboard.press('Escape'); await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), 'Compare', 'focus returns to the button that opened it');
+});
+
+test('react: Blend mode is a thumbnail picker — grouped list with a tick on the current mode, mouse and keyboard pick, no crown badges', async () => {
+  await page.evaluate(async () => { const e = window.__mounted.editor(); e.fc.clear(); const c = document.createElement('canvas'); c.width = 80; c.height = 60; c.getContext('2d').fillRect(0, 0, 80, 60); await e.addImage(c.toDataURL()); });
+  await page.waitForTimeout(500);
+  const mode = () => page.evaluate(() => window.__mounted.editor().fc.getObjects().find(o => o.type === 'image').globalCompositeOperation || 'source-over');
+  const btn = page.locator('.cmbp-btn'); await btn.scrollIntoViewIfNeeded(); await btn.click();
+  const names = await page.$$eval('.cmbp-opt b', b => b.map(x => x.textContent));
+  assert.deepEqual(names.slice(0, 4), ['Normal', 'Darken', 'Multiply', 'Color burn']); assert.equal(await page.locator('.cmbp-sep').count(), 5);
+  assert.ok((await page.$$eval('.cmbp-opt img', i => i.map(x => x.src))).every(s => s.startsWith('data:image/png')), 'every row has a live thumbnail');
+  assert.deepEqual(await page.$$eval('.cmbp-opt[aria-selected=true] b', b => b.map(x => x.textContent)), ['Normal']);
+  await page.locator('.cmbp-opt:has(b:text-is("Darken"))').click(); await page.waitForTimeout(250);
+  assert.equal(await mode(), 'darken'); assert.equal((await btn.innerText()).trim(), 'Darken');
+  await btn.focus(); await page.keyboard.press('Enter'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter'); await page.waitForTimeout(250);
+  assert.equal(await mode(), 'multiply', 'ArrowDown + Enter picks the next mode');
+  await btn.click(); await page.keyboard.press('Escape'); assert.equal(await page.locator('.cmbp-pop').count(), 0, 'Esc closes it');
 });

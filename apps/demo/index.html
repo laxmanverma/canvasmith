@@ -4,10 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Canvasmith — vanilla demo (no React, no build)</title>
+<!-- inline, so the browser's automatic /favicon.ico request doesn't 404 in the console on every load -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%235b8def'/%3E%3Cstop%20offset='1'%20stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='32'%20height='32'%20rx='8'%20fill='url%28%23g%29'/%3E%3Cpath%20d='M16%206.5%2026%2012%2016%2017.5%206%2012z'%20fill='white'/%3E%3Cpath%20d='M7.2%2016.6%2016%2021.4l8.8-4.8'%20fill='none'%20stroke='white'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%20opacity='.85'/%3E%3Cpath%20d='M7.2%2021.2%2016%2026l8.8-4.8'%20fill='none'%20stroke='white'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%20opacity='.55'/%3E%3C/svg%3E">
 <!-- fabric is the only runtime dependency, and the ONLY script tag: the editor itself loads as
      native ES modules straight from src/. This page IS the "bring your own UI" story. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@400;500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <style>
   /* Palette matched to the reference editor's real theme.css tokens (warm near-black surfaces,
      signature warm-orange accent) — mapped onto canvasmith's own (shorter) variable names rather
@@ -23,9 +25,9 @@
     /* Soft warm paper, not stark white — panel is a gentle off-white tinted to match bg's warmth
        (was pure #ffffff sitting directly against a beige page, which read as glare) and bg/stage
        are a touch deeper so the whole surface stack sits lower in brightness. */
-    --bg:#ece6d9; --panel:#faf7f0; --panel-2:#f1ebdd; --line:rgba(30,26,18,.11); --line-soft:rgba(30,26,18,.07);
-    --ink:#26221c; --dim:#5e594f; --dim-2:#8c867a; --accent:#2f6fdb; --accent-ink:#ffffff;
-    --stage:#e4ddcc; --danger:#c73434; --ai-green:#15803d; --ai-violet-ink:#6d28d9; --ai-blue:#2563eb; --ai-violet:#7c3aed; --ai-teal:#0f766e;
+    --bg:#f3efe7; --panel:#ffffff; --panel-2:#f5f1ea; --line:rgba(30,26,18,.12); --line-soft:rgba(30,26,18,.07);
+    --ink:#1c1913; --dim:#5e594f; --dim-2:#8c867a; --accent:#6750a4; --accent-ink:#ffffff;
+    --stage:#e8e2d6; --danger:#c73434; --ai-green:#15803d; --ai-violet-ink:#5a4496; --ai-blue:#6750a4; --ai-violet:#6750a4; --ai-teal:#0f766e;
     --shadow-sm:0 1px 2px rgba(40,34,22,.06); --shadow-md:0 8px 22px rgba(40,34,22,.08); --shadow-lg:0 24px 60px rgba(40,34,22,.2), 0 1px 0 rgba(255,255,255,.5) inset;
     --ring: 0 0 0 1px var(--panel), 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
   }
@@ -39,7 +41,7 @@
      "open". min-width:0 on the flex children is what actually keeps the bar from overflowing. */
   header { display:flex; align-items:center; gap:14px; padding:0 16px; background:var(--panel); border-bottom:1px solid var(--line); position:relative; z-index:20; height:48px }
   header b { color:var(--ink); font-size:14px; font-weight:700; letter-spacing:-.02em; display:flex; align-items:center; gap:7px }
-  header b::before { content:""; width:8px; height:8px; border-radius:2.5px; background:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent) }
+  header b::before { content:""; width:22px; height:22px; flex:none; border-radius:6px; background:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%235b8def'/%3E%3Cstop%20offset='1'%20stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20width='32'%20height='32'%20rx='8'%20fill='url%28%23g%29'/%3E%3Cpath%20d='M16%206.5%2026%2012%2016%2017.5%206%2012z'%20fill='white'/%3E%3Cpath%20d='M7.2%2016.6%2016%2021.4l8.8-4.8'%20fill='none'%20stroke='white'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%20opacity='.85'/%3E%3Cpath%20d='M7.2%2021.2%2016%2026l8.8-4.8'%20fill='none'%20stroke='white'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%20opacity='.55'/%3E%3C/svg%3E") center/contain no-repeat; box-shadow:0 1px 6px color-mix(in srgb, var(--accent) 35%, transparent) }
   header .sp { flex:1 }
   header label { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--dim); font-weight:500 }
   header > .note { color:var(--dim-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex-shrink:1 }
@@ -156,8 +158,15 @@
     opacity:0; pointer-events:none; transition:opacity .15s }
   #right-scroll-cue[data-show=true] { opacity:1; pointer-events:auto }
   #right-scroll-cue svg { color:var(--dim-2); animation:cue-bob 1.4s ease-in-out infinite }
-  main[data-left-collapsed=true] #left-panel { padding:0; width:0 }
-  main[data-right-collapsed=true] #right-panel { padding:0; width:0 }
+  /* Collapse animates with the grid column (see `main`): the panel keeps its width instead of snapping
+     to 0, its content is held at full width so the edge clips it away rather than reflowing, and the
+     border/padding ease out with the column so nothing pops. */
+  #left-panel { transition:padding .18s cubic-bezier(.4,0,.2,1), border-right-width .18s cubic-bezier(.4,0,.2,1) }
+  #right-panel { transition:padding .18s cubic-bezier(.4,0,.2,1), border-left-width .18s cubic-bezier(.4,0,.2,1) }
+  #left-panel > * { min-width:289px }
+  #right-panel > * { min-width:293px }
+  main[data-left-collapsed=true] #left-panel { padding:0; border-right-width:0 }
+  main[data-right-collapsed=true] #right-panel { padding:0; border-left-width:0 }
   /* scrollbars: thin, themed, unobtrusive — default OS scrollbars clash with a dark flat-panel UI */
   nav::-webkit-scrollbar, #left-panel *::-webkit-scrollbar, #right-panel *::-webkit-scrollbar { width:8px; height:8px }
   nav::-webkit-scrollbar-track, #left-panel *::-webkit-scrollbar-track, #right-panel *::-webkit-scrollbar-track { background:transparent }
@@ -192,6 +201,36 @@
   .font-item { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 9px; border-radius:7px; cursor:pointer; font-size:14px; color:var(--ink) }
   .font-item:hover, .font-item[data-on=true] { background:var(--bg) }
   .font-item .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .font-item { margin:0 6px }
+  .font-item .tag { flex:none; font-size:11px; color:var(--dim-2); display:flex; align-items:center; gap:4px }
+  .font-item .tag.add { color:var(--accent); opacity:0; font-weight:600 }
+  .font-item:hover .tag.add, .font-item:focus-visible .tag.add { opacity:1 }
+  .font-item .tag.ok { color:var(--dim) }
+  .font-empty { padding:18px 14px; font-size:12px; color:var(--dim); text-align:center; line-height:1.5 }
+  .fp-head { flex:none; padding:10px 10px 6px; border-bottom:1px solid var(--line) }
+  .fp-search { position:relative; margin-bottom:8px }
+  .fp-search .ico { position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--dim-2); display:flex; pointer-events:none }
+  #tx-font-pop .fp-search input[type=text] { width:100%; box-sizing:border-box; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 30px 8px 32px; font-size:12.5px; color:var(--ink); outline:none }
+  #tx-font-pop .fp-search input[type=text]:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) }
+  .fp-search input::placeholder { color:var(--dim-2) }
+  #fp-q-clear { all:unset; position:absolute; right:6px; top:50%; transform:translateY(-50%); width:20px; height:20px; display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer; color:var(--dim) }
+  #fp-q-clear:hover { background:var(--panel-2); color:var(--ink) }
+  #fp-q-clear[hidden] { display:none }
+  .fp-chips { display:flex; gap:4px; overflow-x:auto; padding-bottom:4px; scrollbar-width:none }
+  .fp-chips::-webkit-scrollbar { display:none }
+  .fp-chips button { all:unset; flex:none; cursor:pointer; padding:4px 10px; border-radius:6px; font-size:11.5px; font-weight:500; color:var(--dim) }
+  .fp-chips button:hover { color:var(--ink); background:var(--bg) }
+  .fp-chips button[data-on=true] { background:var(--accent); color:var(--accent-ink); font-weight:600 }
+  .fp-list { overflow-y:auto; flex:1; min-height:140px; padding:6px 0 }
+  .fp-foot { flex:none; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim-2) }
+  .fp-foot button { all:unset; cursor:pointer; display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:var(--ink); padding:4px 6px; margin:-4px -6px; border-radius:6px }
+  .fp-foot button:hover { background:var(--bg) }
+  #tx-font-pop:not([hidden]) { display:flex }
+  #tx-font-pop .font-grp-label { padding:10px 14px 4px }
+  .font-add { flex:none; display:flex; flex-wrap:wrap; gap:6px; padding:8px 2px 2px; margin-top:6px; border-top:1px solid var(--line) }
+  .font-add input[type=text] { flex:1 1 120px; min-width:0; background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:6px 8px; font-size:12px; color:var(--ink) }
+  .font-add .act { flex:none; padding:6px 10px; font-size:12px }
+  .font-add .act[disabled] { opacity:.5; pointer-events:none }
   .font-item .ag { flex:none; font-size:13px; color:var(--dim-2) }
   .popover-anchor { position:relative }
   .export-menu { position:absolute; right:0; top:calc(100% + 8px); z-index:60; min-width:208px; background:var(--panel-2); border:1px solid var(--line); border-radius:11px; padding:6px; box-shadow:var(--shadow-lg); animation:pop-in .12s cubic-bezier(.2,.8,.3,1) }
@@ -263,6 +302,11 @@
     background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:3px }
   #zoom-pill button { all:unset; box-sizing:border-box; cursor:pointer; width:24px; height:24px; border-radius:999px; display:flex; align-items:center; justify-content:center; color:var(--dim); transition:background .1s }
   #zoom-pill button:hover { background:var(--panel-2); color:var(--ink) }
+  #zoom-pill #voice-btn.on { background:var(--accent,#d4ff45); color:#111 }
+  #zoom-pill #voice-btn.on svg { animation:voice-pulse 1.2s ease-in-out infinite }
+  @keyframes voice-pulse { 50% { opacity:.45 } }
+  #voice-caption { position:absolute; bottom:56px; right:16px; z-index:15; max-width:280px; padding:6px 12px; border-radius:10px; font-size:12px; background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow-lg); color:var(--ink) }
+  #voice-caption.err { color:#ff6b6b }
   #zoom-pct { all:unset; box-sizing:border-box; cursor:pointer; min-width:46px; padding:0 6px; height:24px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:11.5px; font-weight:600; color:var(--ink); font-family:"JetBrains Mono",ui-monospace,monospace; transition:background .1s }
   #zoom-pct:hover { background:var(--panel-2) }
   #zoom-div { width:1px; height:18px; background:var(--line); margin:0 3px }
@@ -340,8 +384,12 @@
   #compare-header { display:flex; align-items:flex-start; justify-content:space-between; padding:20px 28px; flex:none }
   #compare-header strong { font-size:16px; font-family:"Bricolage Grotesque",sans-serif }
   #compare-sub { font-size:13px; color:var(--dim); margin:4px 0 0 }
-  #compare-panes { flex:1; display:grid; grid-template-columns:1fr 1fr; gap:20px; padding:0 28px 28px; min-height:0 }
-  .compare-pane { position:relative; display:grid; place-items:center; background:var(--stage); border:1px solid var(--line); border-radius:12px; overflow:hidden; min-height:0 }
+  /* Bounded top to bottom so a tall (4:5, 9:16) canvas scales down to fit instead of running off the screen:
+     the box fills the backdrop, the panes' one row is minmax(0,1fr), and the image is centred by flex so its
+     max-height resolves against the pane's definite height (an auto grid row would size to the image). */
+  #compare-box { flex:1; display:flex; flex-direction:column; min-height:0 }
+  #compare-panes { flex:1; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:minmax(0,1fr); gap:20px; padding:0 28px 28px; min-height:0 }
+  .compare-pane { position:relative; display:flex; align-items:center; justify-content:center; padding:16px; background:var(--stage); border:1px solid var(--line); border-radius:12px; overflow:hidden; min-height:0 }
   .compare-pane img { max-width:100%; max-height:100%; object-fit:contain; border-radius:6px; box-shadow:var(--shadow-lg) }
   .compare-label { position:absolute; top:14px; left:14px; background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:4px 11px; font-size:11px; font-weight:600; color:var(--dim) }
   button { all:unset; box-sizing:border-box; cursor:pointer; display:flex; align-items:center; gap:8px; width:100%; padding:8px 11px; border-radius:9px; font-size:13px; font-weight:500; transition:background .1s,border-color .1s }
@@ -396,7 +444,10 @@
   .layer:hover { background:var(--panel-2) }
   .layer[data-on=true] { background:color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-color:color-mix(in srgb, var(--accent) 55%, transparent) }
   .layer[data-visible=false] .layer-thumb, .layer[data-visible=false] .layer-meta { opacity:.4 }
-  .layer[data-dragover=true] { background:color-mix(in srgb, var(--accent) 16%, var(--panel-2)); border-color:var(--accent); border-style:dashed }
+  .layer[data-dragover=true] { background:color-mix(in srgb, var(--accent) 10%, var(--panel-2)) }
+  /* where the drop lands: a line on the edge the row will go above/below */
+  .layer[data-dragover=true][data-drop=above] { box-shadow:inset 0 2px 0 var(--accent) }
+  .layer[data-dragover=true][data-drop=below] { box-shadow:inset 0 -2px 0 var(--accent) }
   .layer[data-dragging=true] { opacity:.4 }
   .layer-rename { all:unset; box-sizing:border-box; width:100%; font-size:12px; font-weight:600; padding:2px 5px; border-radius:5px; background:var(--bg); border:1px solid var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); color:var(--ink) }
   .lr-toggles { display:flex; gap:0; flex:none }
@@ -434,6 +485,27 @@
   .asset-thumb span { display:block; font-size:10px; color:var(--dim); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .asset-thumb:hover img { border-color:var(--dim-2) }
   #sticker-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px }
+  #icon-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:4px }
+  #icon-grid .sticker-thumb { padding:9px; border-color:transparent; background:var(--ctl, var(--bg)); border-radius:8px }
+  #icon-grid .sticker-thumb:hover { border-color:var(--accent); background:var(--panel-2) }
+  #icon-grid .sticker-thumb[disabled] { opacity:.5; pointer-events:none }
+  #icon-grid .skel { aspect-ratio:1; border-radius:8px; background:linear-gradient(100deg,var(--ctl, var(--bg)) 30%,var(--panel-2) 50%,var(--ctl, var(--bg)) 70%); background-size:300% 100%; animation:icon-shimmer 1.1s linear infinite }
+  @keyframes icon-shimmer { from { background-position:100% 0 } to { background-position:-100% 0 } }
+  .icon-search { position:relative; margin-bottom:10px }
+  .icon-search .ico { position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--dim-2); display:flex; pointer-events:none }
+  #icon-q { width:100%; box-sizing:border-box; background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:10px 34px 10px 34px; font-size:13px; color:var(--ink); outline:none }
+  #icon-q:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) }
+  #icon-q::placeholder { color:var(--dim-2) }
+  #icon-q-clear { all:unset; position:absolute; right:7px; top:50%; transform:translateY(-50%); width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer; color:var(--dim) }
+  #icon-q-clear:hover { background:var(--panel-2); color:var(--ink) }
+  #icon-q-clear[hidden] { display:none }
+  .icon-sugg { display:flex; gap:6px; overflow-x:auto; padding:0 0 8px; margin-bottom:6px; scrollbar-width:none; -webkit-mask:linear-gradient(90deg,#000 88%,transparent); mask:linear-gradient(90deg,#000 88%,transparent) }
+  .icon-sugg::-webkit-scrollbar { display:none }
+  .icon-sugg .chip { flex:none; text-transform:capitalize }
+  .icon-meta { display:flex; justify-content:space-between; align-items:center; font-size:11.5px; color:var(--dim); margin-bottom:8px; min-height:16px }
+  .icon-credit { color:var(--dim-2); font-size:10.5px }
+  .icon-glyph { width:100%; height:100%; background:var(--dim); -webkit-mask:var(--src) center/contain no-repeat; mask:var(--src) center/contain no-repeat }
+  .sticker-thumb:hover .icon-glyph { background:var(--ink) }
   .sticker-thumb { all:unset; box-sizing:border-box; cursor:pointer; aspect-ratio:1; border-radius:9px; border:1px solid var(--line); background:var(--bg); display:flex; align-items:center; justify-content:center; padding:10px; transition:border-color .1s,background .1s }
   .sticker-thumb:hover { border-color:var(--dim-2); background:var(--panel-2) }
   .sticker-thumb svg { width:100%; height:100%; color:var(--dim) }
@@ -508,6 +580,7 @@
   .cv-dims { display:flex; gap:8px }
   .cv-dim { flex:1; min-width:0; display:flex; align-items:center; gap:6px; padding:0 12px; height:40px; border-radius:6px; background:var(--bg); border:1px solid var(--line); font-size:12px; color:var(--dim); transition:border-color .1s,box-shadow .1s }
   .cv-dim:hover { border-color:var(--dim-2) }
+  .cv-dim .cv-dim-ico { display:grid; place-items:center; flex:none; color:var(--dim-2) }
   .cv-dim:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) }
   .cv-dim input[type=number] { all:unset; flex:1; min-width:0; text-align:center; font-family:"JetBrains Mono",ui-monospace,monospace; font-size:13px; font-weight:700; color:var(--ink); -moz-appearance:textfield }
   .cv-dim input::-webkit-inner-spin-button, .cv-dim input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0 }
@@ -694,6 +767,7 @@
   .export-sep { height:1px; background:var(--line); margin:5px 0 }
   .export-hint { margin-left:auto; padding-left:10px; font-size:9.5px; color:var(--dim-2); font-weight:500; white-space:nowrap }
   .export-menu-item { display:flex; align-items:center; gap:6px; white-space:nowrap }
+  .export-menu-item[hidden] { display:none }
   .save-note { font-size:11px; color:var(--dim-2); white-space:nowrap; flex:none; display:flex; align-items:center; gap:5px }
   .save-note::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--dim-2) }
   .save-note[data-warn=true] { color:#e0a02a }
@@ -705,6 +779,230 @@
   /* icon wrappers inside text buttons: flex, so the SVG centres on the label instead of sitting on
      the text baseline (an inline <svg> rides a few px high) */
   #newdoc-icon, #openfile-icon, #export-caret { display:flex; align-items:center }
+
+  /* ═══ Visual refresh: a quieter, more professional skin over the same layout and behaviour ═══
+     Neutral greys (no warm tint), one UI typeface, sentence-case section labels, flat filled
+     controls at one height (30px) and radius (6px), thinner sliders, compact layer rows.
+     Only looks change here — every id/class, size class and behaviour above is untouched. */
+  :root[data-mode="dark"], :root {
+    --bg:#141416; --panel:#1b1b1e; --panel-2:#26262a; --line:rgba(255,255,255,.08); --line-soft:rgba(255,255,255,.05);
+    --ink:#ececee; --dim:#a1a1aa; --dim-2:#8d8d97; --accent:#3b82f6; --accent-fill:#2c6fe6; --accent-ink:#ffffff; --stage:#111113;
+    --ctl:#232327; --ctl-hover:#2b2b30; --track-bg:#38383e;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow-md:0 6px 20px rgba(0,0,0,.35); --shadow-lg:0 16px 48px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
+    --ring:0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  :root[data-mode="light"] {
+    /* Fastrr Studio palette (same tokens as ditto-fe's light theme): cream page, white panels, violet accent. */
+    --bg:#f3efe7; --panel:#ffffff; --panel-2:#f5f1ea; --line:rgba(30,26,18,.12); --line-soft:rgba(30,26,18,.07);
+    --ink:#1c1913; --dim:#5e594f; --dim-2:#8c867a; --accent:#6750a4; --accent-fill:#6750a4; --accent-ink:#ffffff; --stage:#e8e2d6;
+    --ctl:#f1ece3; --ctl-hover:#e9e3d7; --track-bg:#ddd6c8;
+    --shadow-sm:0 1px 2px rgba(40,34,22,.05); --shadow-md:0 8px 22px rgba(40,34,22,.10); --shadow-lg:0 16px 48px rgba(40,34,22,.16), 0 0 0 1px rgba(40,34,22,.06);
+    --ring:0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  body { font:12.5px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; letter-spacing:-.003em; font-feature-settings:"cv11","ss01" }
+  header b, .grp, #props-title, .layer-meta .nm { font-family:inherit }
+  #canvas-section[hidden] { display:none }
+
+  body { grid-template-rows:46px 1fr }
+  #canvas-section:not([hidden]) ~ #props-title-row { margin-top:16px !important; padding-top:14px; border-top:1px solid var(--line-soft) }
+  /* header */
+  header { height:46px; gap:10px; padding:0 12px; border-bottom-color:var(--line) }
+  header b { font-size:13px; font-weight:600; letter-spacing:-.01em }
+  header b::before { width:20px; height:20px; border-radius:5px; box-shadow:none }
+  header .act { height:28px; padding:0 10px; border:none; border-radius:6px; background:transparent; color:var(--dim); font-weight:500; font-size:12px; gap:6px }
+  header .act:hover { background:var(--ctl); color:var(--ink) }
+  header .act-accent, #export-btn { background:var(--accent); color:var(--accent-ink) }
+  header .act-accent:hover, #export-btn:hover { background:var(--accent); color:var(--accent-ink); filter:brightness(1.08) }
+  header .icon-btn { width:28px; height:28px; border:none; border-radius:6px; color:var(--dim) }
+  header .icon-btn:hover { background:var(--ctl); color:var(--ink) }
+  header .hdiv { background:var(--line); opacity:1 }
+  #zoom-pill { background:var(--ctl); border:none; border-radius:6px; padding:2px; height:28px }
+  #zoom-pill button { width:24px; height:24px; border-radius:5px }
+  #zoom-pill button:hover { background:var(--ctl-hover) }
+
+  /* rail */
+  .rail-btn { width:36px; height:34px; border-radius:7px }
+  .rail-btn:hover { background:var(--ctl) }
+  .rail-btn[data-on=true] { background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent); box-shadow:none }
+  .rail-btn[data-on=true] .rail-caret { border-bottom-color:var(--accent) }
+  .rail-caret { border-bottom-color:var(--dim-2) }
+
+  /* panel tabs */
+  .lp-tab, .tabs button { font-size:12px; font-weight:500; color:var(--dim-2); padding:12px 4px 10px }
+  .lp-tab[aria-selected=true], .tabs button[data-on=true] { color:var(--ink); font-weight:600; border-bottom-color:var(--accent) }
+  .tabs { gap:2px; border-bottom-color:var(--line) }
+  .lp-count { background:var(--ctl); color:var(--dim) }
+
+  /* section labels: sentence case, quiet divider */
+  .grp { font-size:11.5px; font-weight:600; letter-spacing:0; text-transform:none; color:var(--ink); margin:14px 0 8px; padding-top:14px; border-top:1px solid var(--line-soft) }
+  .grp:first-child { margin-top:0; padding-top:0; border-top:none }
+  .dock-head { font-size:11.5px; letter-spacing:0; text-transform:none; color:var(--ink); font-weight:600 }
+  .popover h4 { font-size:12px; letter-spacing:0; text-transform:none; color:var(--ink); font-weight:600 }
+  #canvas-section { padding-bottom:6px; margin-bottom:0 }
+  #canvas-section::after { display:none }
+  #tool-panel::after { height:1px; background:var(--line-soft) }
+  #canvas-section .grp .aside { color:var(--dim-2) }
+  #props-title { font-size:13px !important; font-weight:600 }
+  .field, .field-row { font-size:11px; font-weight:500; letter-spacing:0; text-transform:none; color:var(--dim) }
+  .slider-row { font-size:11.5px; color:var(--dim); font-weight:400 }
+  .slider-row .val, .slider-row .tag.mono { font-family:inherit; font-size:11px; color:var(--dim); background:none; padding:0; min-width:34px; justify-content:flex-end }
+  .note { font-size:11px; color:var(--dim-2); line-height:1.5 }
+
+  /* buttons: one flat filled style */
+  .act { height:30px; padding:0 10px; border:none; border-radius:6px; background:var(--ctl); font-weight:500; font-size:12px; color:var(--ink); gap:6px }
+  .act:hover { border:none; background:var(--ctl-hover) }
+  .act:disabled { opacity:.45 }
+  .act-accent { background:var(--accent); color:var(--accent-ink) }
+  .act-accent:hover { background:var(--accent); filter:brightness(1.08) }
+  .chip { padding:5px 10px; border:none; border-radius:6px; background:var(--ctl); font-size:11.5px; font-weight:500 }
+  .chip:hover { border:none; background:var(--ctl-hover) }
+  .chip[data-on=true] { background:var(--accent); color:var(--accent-ink) }
+  .icon-btn { border:none; border-radius:6px; background:var(--ctl) }
+  .icon-btn:hover { border:none; background:var(--ctl-hover) }
+  .icon-btn[data-active=true] { background:color-mix(in srgb, var(--accent) 18%, var(--ctl)); color:var(--accent) }
+  .align-grid { gap:4px }
+  .align-grid button { height:28px; border:none; border-radius:6px; background:var(--ctl); color:var(--dim) }
+  .align-grid button:hover { border:none; background:var(--ctl-hover); color:var(--ink) }
+  .seg { gap:2px; padding:2px; border:none; border-radius:7px; background:var(--ctl) }
+  .seg .act { height:26px; background:none; border-radius:5px; font-size:11.5px }
+  .seg .act[data-on=true] { background:var(--panel); color:var(--ink); box-shadow:var(--shadow-sm); font-weight:600 }
+  :root[data-mode="dark"] .seg .act[data-on=true], :root:not([data-mode]) .seg .act[data-on=true] { background:#3a3a40 }
+  .cv-ratios { gap:4px }
+  .cv-ratios button { padding:6px 0; border:none; border-radius:6px; background:var(--ctl); font-weight:500; font-size:11.5px }
+  .cv-ratios button:hover { border:none; background:var(--ctl-hover) }
+  .cv-ratios button[data-on=true] { background:color-mix(in srgb, var(--accent) 18%, var(--ctl)); color:var(--accent) }
+  .status-pill { font-size:10px; font-weight:600; padding:1px 7px; letter-spacing:0; text-transform:none }
+  .tag { border-radius:5px; background:var(--ctl) }
+
+  /* inputs: filled, a border only on hover/focus */
+  input[type=number], input[type=text], select { height:30px; padding:0 9px; border:1px solid transparent; border-radius:6px; background:var(--ctl); font-size:12px }
+  input[type=number]:hover, input[type=text]:hover, select:hover { border-color:var(--line) }
+  input[type=number]:focus, input[type=text]:focus, select:focus { border-color:var(--accent); box-shadow:none }
+  .cv-dim, .cv-fill { height:32px; padding:0 10px; border:1px solid transparent; border-radius:6px; background:var(--ctl) }
+  .cv-dim:hover, .cv-fill:hover { border-color:var(--line) }
+  .cv-dim:focus-within, .cv-fill:focus-within { border-color:var(--accent); box-shadow:none }
+  .cv-dim input[type=number] { font-family:inherit; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums }
+  .cv-fill .hex, .cv-fill .pct, .cv-fill .pct input { font-family:inherit; font-variant-numeric:tabular-nums }
+  .cv-swatch { width:32px; height:32px; border-radius:6px }
+  .field-row .field-box { height:30px }
+  input[type=color] { width:24px; height:24px; border-radius:5px }
+  input[type=color]::-webkit-color-swatch { border-radius:5px }
+  .swatch-btn { width:18px; height:18px; border-width:1px; border-color:var(--line) }
+  .swatch-btn[data-on=true] { box-shadow:0 0 0 2px var(--panel), 0 0 0 3.5px var(--accent); border-color:transparent }
+
+  /* sliders: thin track, small handle */
+  input[type=range] { height:18px }
+  input[type=range]::-webkit-slider-runnable-track { height:3px !important; background:var(--track, var(--track-bg)) }
+  input[type=range]::-moz-range-track { height:3px !important; background:var(--track, var(--track-bg)) }
+  input[type=range]::-webkit-slider-thumb { width:12px; height:12px; margin-top:-4.5px; border:none; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.25), 0 1px 3px rgba(0,0,0,.3) }
+  input[type=range]::-moz-range-thumb { width:12px; height:12px; border:none; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.25), 0 1px 3px rgba(0,0,0,.3) }
+  input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent) }
+
+  /* layers: flat compact rows */
+  .layer { gap:8px; padding:5px 8px 5px 4px; border-radius:6px; border:none; font-size:12px }
+  .layer:hover { background:var(--ctl) }
+  .layer[data-on=true] { background:color-mix(in srgb, var(--accent) 16%, transparent); border:none }
+  .layer-thumb { width:28px; height:28px; border-radius:5px; border:1px solid var(--line-soft) }
+  .layer-thumb[data-kind=text] { font-size:11px; font-weight:700 }
+  .layer-meta .nm { font-weight:500; font-size:12px }
+  .layer-meta .sub { font-size:10.5px; margin-top:0 }
+  .layer-actions { background:var(--panel); box-shadow:-10px 0 10px -4px var(--panel); border-radius:6px }
+  .layer:hover .layer-actions { background:var(--ctl); box-shadow:-10px 0 10px -4px var(--ctl) }
+  .layer[data-on=true] .layer-actions { background:color-mix(in srgb, var(--accent) 16%, var(--panel)); box-shadow:-10px 0 10px -4px color-mix(in srgb, var(--accent) 16%, var(--panel)) }
+  .layer-actions button:hover, .lr-ico:hover, .lr-fold:hover { background:var(--ctl-hover) }
+  .lp-toolbar { padding:8px 10px; gap:2px }
+  .lp-tbtn { width:28px; height:28px; border-radius:6px }
+  .lp-tbtn:hover:not(:disabled) { background:var(--ctl) }
+
+  /* Adjust: sub-groups and disclosures in the same quiet sentence case, readouts in the UI face */
+  .adj-subgrp { font-size:11px; font-weight:500; letter-spacing:0; text-transform:none; color:var(--dim-2); margin:12px 0 4px }
+  .disclose { font-size:11.5px; font-weight:600; letter-spacing:0; text-transform:none; color:var(--ink); margin-top:12px }
+  .adj-row .val { font-family:inherit; font-size:11px; color:var(--dim) }
+  .adj-row .val.dim { color:var(--dim); opacity:1 }
+  #adj-reset { margin-bottom:4px }
+  /* section labels that are the first child of a wrapper still need the divider above them */
+  #geom-section > .grp, #assets-tray > .grp, #typography-section > .grp { margin-top:14px; padding-top:14px; border-top:1px solid var(--line-soft) }
+  .cmdk-item .grp { margin:0; padding:0; border:none; font-size:11px; font-weight:500; color:var(--dim-2) }
+  /* menus and popovers */
+  .popover, .export-menu, .rail-flyout { background:var(--panel); border:none; border-radius:10px; box-shadow:var(--shadow-lg) }
+  .export-menu-item, .rail-flyout-item { font-weight:500; border-radius:6px }
+  .export-menu-item:hover, .rail-flyout-item:hover, .rail-flyout-item[data-on=true] { background:var(--ctl) }
+  #cmdk-box { border:none; border-radius:12px; box-shadow:var(--shadow-lg) }
+  .cmdk-item { border-radius:6px; font-size:12.5px }
+  .cmdk-item[data-on=true] { background:var(--ctl) }
+
+  /* ── document tabs (multi-canvas): a bar attached under the header, like file tabs. The active
+     tab takes the stage colour and drops its bottom border so it reads as part of the canvas. */
+  #center { display:flex; flex-direction:column; min-width:0; min-height:0 }
+  #center > #stage { flex:1; min-height:0 }
+  #doctabs { flex:none; display:flex; align-items:flex-end; gap:2px; height:42px; padding:0 10px; background:var(--panel); border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:none; position:relative; z-index:10 }
+  #doctabs::-webkit-scrollbar { display:none }
+  .doctab { flex:none; display:flex; align-items:center; gap:6px; max-width:200px; height:34px; margin-bottom:-1px; padding:0 6px 0 12px; border:1px solid transparent; border-bottom:none; border-radius:3px 3px 0 0;
+    background:transparent; color:var(--dim); font-size:12px; font-weight:500; cursor:pointer; user-select:none }
+  .doctab:hover { color:var(--ink); background:var(--ctl) }
+  .doctab[data-on=true] { background:var(--stage); color:var(--ink); border-color:var(--line); box-shadow:inset 0 2px 0 var(--accent) }
+  .doctab .dt-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .doctab .dt-x { all:unset; display:grid; place-items:center; width:18px; height:18px; border-radius:5px; color:var(--dim-2); cursor:pointer }
+  .doctab .dt-x:hover { background:var(--ctl); color:var(--ink) }
+  .doctab input { all:unset; width:110px; font-size:12px; color:var(--ink); border-bottom:1px solid var(--accent) }
+  #doctab-add { all:unset; box-sizing:border-box; flex:none; display:grid; place-items:center; width:28px; height:28px; margin:0 0 5px 4px; border-radius:7px; color:var(--dim-2); cursor:pointer }
+  #doctab-add:hover { color:var(--ink); background:var(--ctl) }
+  /* Frame properties (Canvas section): the working frame's name + add/delete, in the same filled-control
+     family as the W/H fields below. Switching frames is done on the canvas labels / Layers folders. */
+  .fr-bar { display:flex; gap:6px; margin:8px 0 4px }
+  .fr-field { flex:1; min-width:0; display:flex; align-items:center; gap:8px; height:34px; padding:0 10px; border-radius:6px; background:var(--ctl); border:1px solid transparent; color:var(--dim-2); transition:border-color .1s, box-shadow .1s }
+  .fr-field:hover { border-color:var(--dim-2) }
+  .fr-field:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) }
+  .fr-field input { all:unset; flex:1; min-width:0; font-size:12.5px; font-weight:600; color:var(--ink) }
+  .fr-btn { all:unset; box-sizing:border-box; flex:none; display:grid; place-items:center; width:34px; height:34px; border-radius:6px; background:var(--ctl); color:var(--dim); cursor:pointer; transition:background .1s, color .1s }
+  .fr-btn:hover { background:var(--ctl-hover); color:var(--ink) }
+  .fr-btn:focus-visible { box-shadow:var(--ring) }
+  .fr-btn:disabled { opacity:.35; cursor:not-allowed; background:var(--ctl); color:var(--dim) }
+  #frame-del:not(:disabled):hover { color:var(--danger, #f87171) }
+  /* Layers panel: frame folders (shown when the page has more than one frame) */
+  .frame-head { display:flex; align-items:center; gap:6px; height:30px; margin:6px 0 2px; padding:0 8px 0 4px; border-radius:7px; cursor:pointer; color:var(--dim); font-size:12px; font-weight:600 }
+  .frame-head:first-child { margin-top:0 }
+  .frame-head:hover { background:var(--ctl); color:var(--ink) }
+  .frame-head[data-on=true] { color:var(--ink); background:color-mix(in srgb, var(--accent) 16%, transparent) }
+  .frame-head[data-on=true] .fh-ico, .frame-head[data-on=true] .fh-count { color:var(--accent) }
+  .frame-head[data-on=true]:hover { background:color-mix(in srgb, var(--accent) 20%, transparent) }
+  .frame-head .fh-fold { all:unset; display:grid; place-items:center; width:18px; height:18px; border-radius:5px; cursor:pointer; color:var(--dim-2) }
+  .frame-head .fh-fold[data-open=false] svg { transform:rotate(-90deg) }
+  .frame-head .fh-ico { display:grid; place-items:center; color:var(--dim-2) }
+  .frame-head .fh-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .frame-head .fh-count { font-size:10.5px; font-weight:500; color:var(--dim-2); font-variant-numeric:tabular-nums }
+  .frame-layers { margin-left:11px; padding-left:4px; border-left:1px solid var(--line) }
+  .frame-empty { padding:6px 10px 8px; font-size:11.5px; color:var(--dim-2) }
+  /* Combine shapes (shown with 2+ layers selected) */
+  #combine-section[hidden] { display:none }
+  .cb-list { display:flex; flex-direction:column; gap:2px; margin-top:6px }
+  .cb-item { all:unset; box-sizing:border-box; display:flex; align-items:center; gap:10px; height:32px; padding:0 10px; border-radius:6px; color:var(--ink); font-size:12.5px; font-weight:500; cursor:pointer; transition:background .1s }
+  .cb-item svg { color:var(--dim); flex:none }
+  .cb-item:hover:not(:disabled) { background:var(--ctl) }
+  .cb-item:hover:not(:disabled) svg { color:var(--ink) }
+  .cb-item:focus-visible { box-shadow:var(--ring) }
+  .cb-item:disabled { opacity:.38; cursor:not-allowed }
+  .cb-hint { margin-top:6px; font-size:11.5px; line-height:1.4; color:var(--dim-2) }
+  /* WCAG AA contrast: white on the accent blue is only 3.7:1 in the dark theme (and 10.5-12px labels
+     in the dimmest grey were 3.5:1), so FILLED accent surfaces use a slightly deeper blue while the
+     accent stays as-is for text/rings, which it already passes as. */
+  .act-accent, #export-btn, header .act-accent, .lp-ai-card .ai-detect-btn, .rail-btn[data-on=true], button[data-on=true], .chip[data-on=true],
+  .seg .act[data-on=true], .export-scale-btn[data-on=true], .aix-convert button.aix-primary, #extend-banner, .icon-btn[data-active=true],
+  #persp-bar .act-accent, #path-bar .act-accent, .check-item[data-on=true] .box { background:var(--accent-fill, var(--accent)); border-color:var(--accent-fill, var(--accent)) }
+  .act-accent:hover, #export-btn:hover, header .act-accent:hover { background:var(--accent-fill, var(--accent)) }
+  /* Slider rows: the label is a bare text node, so every track began at a different x (Line height vs
+     Letter spacing vs Opacity). A shared label column lines them all up. Only plain
+     label + slider + readout rows are touched. */
+  #right-panel .slider-row:has(> input[type=range] + .val) { display:grid; grid-template-columns:6.6em minmax(0,1fr) auto; column-gap:8px; align-items:center }
+  .match-row { margin:6px 0 2px } .match-row [hidden], .match-row[hidden] { display:none !important }
+  .match-head select { flex:1; min-width:0; height:28px; padding:0 8px; border-radius:6px; background:var(--ctl); color:var(--ink); border:1px solid transparent; font:inherit; font-size:12px }
+  .match-head select:hover { border-color:var(--line) } .match-head select:focus-visible { outline:none; border-color:var(--accent); box-shadow:var(--ring) }
+  /* sticky "jump to section" bar at the top of the properties body */
+  .prop-jump { position:sticky; top:-1px; z-index:6; display:flex; gap:4px; flex-wrap:wrap; margin:0 0 10px; padding:8px 0 8px; background:var(--panel); border-bottom:1px solid var(--line-soft, var(--line)) }
+  .prop-jump[hidden] { display:none }
+  .prop-jump button { all:unset; box-sizing:border-box; cursor:pointer; padding:4px 9px; border-radius:999px; font-size:11.5px; font-weight:500; color:var(--dim); background:var(--ctl); border:1px solid transparent }
+  .prop-jump button:hover { color:var(--ink); border-color:var(--line) } .prop-jump button:focus-visible { outline:none; box-shadow:var(--ring); color:var(--ink) }
+  #props-body .grp[id], #props-body #adjust-section-label { scroll-margin-top:50px }
 </style>
 </head>
 <body>
@@ -740,12 +1038,25 @@
       </div>
     </div>
   </div>
+  <div class="popover-anchor" id="feather-anchor">
+    <button class="act" id="feather-btn" title="Feather — soften the edge of the selection, or of the selected image"><svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round'><circle cx='12' cy='12' r='4.5'/><circle cx='12' cy='12' r='8' stroke-dasharray='1 3.2'/><circle cx='12' cy='12' r='10.8' stroke-dasharray='.1 4.6' opacity='.6'/></svg><span class="lbl">Feather</span></button>
+    <div class="popover" id="feather-pop" hidden>
+      <h4>Feather</h4>
+      <div class="slider-row"><span id="feather-target" style="flex:1;font-size:11.5px"></span></div>
+      <div class="slider-row" style="margin-top:6px"><input type="range" id="feather-slider" min="0" max="150" value="0"><span class="tag mono" id="feather-val">0px</span></div>
+      <div id="feather-mode-row" style="margin-top:8px"><div class="seg" id="feather-mode" role="group" aria-label="Apply feather as"><button class="act" data-m="mask" title="Non-destructive: a layer mask you can edit or remove">As mask</button><button class="act" data-m="layer" title="Permanent: fades the image's own pixels (undo to revert)">On the layer</button></div></div>
+      <button class="act" id="feather-apply" style="width:100%;margin-top:8px" hidden>Apply to layer</button>
+      <div class="note" id="feather-hint" style="margin-top:8px"></div>
+    </div>
+  </div>
   <div id="zoom-pill">
     <button id="zoom-out" title="Zoom out (−)"></button>
     <button id="zoom-pct" title="Reset to fit"></button>
     <button id="zoom-in" title="Zoom in (+)"></button>
     <span id="zoom-div"></span>
     <button id="zoom-fit" title="Fit to screen (0)"></button>
+    <span id="zoom-div"></span>
+    <button id="voice-btn" title="Voice control — say &quot;brush&quot;, &quot;undo&quot;, &quot;make it red&quot;…"></button>
   </div>
   <button class="icon-btn" id="theme-toggle" title="Toggle light/dark theme"></button>
   <span class="hdiv"></span>
@@ -766,6 +1077,7 @@
       <div class="export-dims" id="export-dims"></div>
       <button class="export-menu-item" data-format="png">⬇ PNG</button>
       <button class="export-menu-item" data-format="jpg">⬇ JPG</button>
+      <button class="export-menu-item" data-format="frames" id="export-all-frames" hidden>⬇ All frames <span class="export-hint">one PNG each</span></button>
       <button class="export-menu-item" data-format="svg">⬇ SVG <span class="export-hint">vector</span></button>
       <div class="export-sep"></div>
       <button class="export-menu-item" data-format="project">⬇ Project file <span class="export-hint">keeps layers</span></button>
@@ -826,6 +1138,8 @@
     <div id="left-scroll-cue"></div>
   </div>
 
+  <div id="center">
+  <div id="doctabs" role="tablist" aria-label="Open documents"></div>
   <div id="stage">
     <canvas id="cv"></canvas>
     <button id="extend-banner" hidden></button>
@@ -844,7 +1158,9 @@
       <input type="text" id="aiinsert-prompt" placeholder="Describe what to draw here…">
       <button class="act act-accent" id="aiinsert-run"></button>
     </div>
+    <div id="voice-caption" hidden></div>
     <svg id="review-hover-preview" hidden width="1" height="1"><polygon fill="rgba(212,255,69,.28)" stroke="#d4ff45" stroke-width="2"></polygon></svg>
+  </div>
   </div>
   <button class="collapse-btn" id="collapse-left" title="Hide side panel"></button>
   <button class="collapse-btn" id="collapse-right" title="Hide Properties panel"></button>
@@ -879,6 +1195,8 @@
           <span class="status-pill" id="tool-status-pill">Active</span>
         </div>
         <div class="note" id="tool-hint" style="margin-top:4px"></div>
+        <!-- colour-match tolerance for the magic wand and the paint bucket (both only had it hidden behind [ ]) -->
+        <div class="slider-row" id="tool-tol-row" style="display:none;margin-top:10px" title="How different a colour can be and still be included">Tolerance <input type="range" id="tool-tol" min="0" max="128"><span class="tag mono" id="tool-tol-val"></span></div>
       <div id="brush-section" style="display:none">
         <div class="grp" style="margin-top:0;padding-top:0;border-top:none" id="brush-section-label">Brush</div>
         <div class="slider-row" id="brush-size-row">Size <input type="range" id="brush-size" min="2" max="220" value="30"><span class="tag mono" id="brush-size-val"></span></div>
@@ -931,9 +1249,12 @@
         <div id="selmod-section">
       <div class="grp">Selection</div>
       <div style="display:flex;gap:6px">
-        <button class="act" id="sel-expand" style="flex:1"></button>
-        <button class="act" id="sel-contract" style="flex:1"></button>
+        <button class="act" id="sel-expand" style="flex:1" title="Grow the selection outward by the amount below"></button>
+        <button class="act" id="sel-contract" style="flex:1" title="Shrink the selection inward by the amount below"></button>
       </div>
+      <div class="slider-row" style="margin-top:6px" title="How far Expand / Contract move the edge">Amount <input type="range" id="sel-morph-px" min="1" max="100" value="6"><span class="tag mono" id="sel-morph-val">6px</span></div>
+      <div class="note" style="margin-top:4px">Drag a white point on the outline to reshape it (⌘/Ctrl-drag moves just that point; drag an edge to add a point). Dragging inside moves it, arrows nudge.</div>
+      <div class="slider-row" id="sel-feather-row" style="margin-top:6px" title="Soften the selection edge (Photoshop's Feather). Applies when you copy, move or recolour the selection.">Feather <input type="range" id="sel-feather" min="0" max="100" value="0"><span class="tag mono" id="sel-feather-val">0px</span></div>
       <button class="act" id="sel-similar" style="width:100%;margin-top:6px"></button>
       <button class="act" id="sel-recolor-btn" style="width:100%;margin-top:6px"></button>
       <input type="color" id="sel-recolor" value="#4f8ff0" style="width:100%;margin-top:6px;display:none">
@@ -945,10 +1266,16 @@
         </div>
       </div>
     <div id="canvas-section">
-      <div class="grp" style="margin-top:0;padding-top:0;border-top:none"><span>Canvas dimensions</span><span class="aside" id="cv-ratio-label"></span></div>
+      <div class="grp" style="margin-top:0;padding-top:0;border-top:none"><span>Frame</span><span class="aside" id="frame-count"></span></div>
+      <div class="fr-bar">
+        <label class="fr-field" title="Frame name — rename it here"><span class="fr-field-ico" id="frame-field-ico"></span><input id="frame-name" maxlength="40" spellcheck="false" aria-label="Frame name"></label>
+        <button class="fr-btn" id="frame-add" title="Add a frame to this page" aria-label="Add frame"></button>
+        <button class="fr-btn" id="frame-del" title="Delete this frame and its layers" aria-label="Delete frame"></button>
+      </div>
+      <div class="grp"><span>Frame size</span><span class="aside" id="cv-ratio-label"></span></div>
       <div class="cv-dims">
-        <label class="cv-dim"><span>W</span><input type="number" id="cv-w" min="1" max="8000" aria-label="Canvas width"><span>px</span></label>
-        <label class="cv-dim"><span>H</span><input type="number" id="cv-h" min="1" max="8000" aria-label="Canvas height"><span>px</span></label>
+        <label class="cv-dim" title="Width"><span class="cv-dim-ico" id="cv-w-ico"></span><input type="number" id="cv-w" min="1" max="8000" aria-label="Canvas width"><span>px</span></label>
+        <label class="cv-dim" title="Height"><span class="cv-dim-ico" id="cv-h-ico"></span><input type="number" id="cv-h" min="1" max="8000" aria-label="Canvas height"><span>px</span></label>
       </div>
       <div class="cv-ratios" id="cv-ratios"></div>
       <div class="grp"><span>Background fill</span><button class="cv-link" id="cv-transparent"></button></div>
@@ -963,6 +1290,11 @@
     <div id="props-title-row" style="display:flex;align-items:center;gap:8px;margin-top:0;margin-bottom:10px">
       <strong id="props-title" style="font-size:13px">Properties</strong>
     </div>
+    <!-- shown while editing one part of a sticker/group (double-click): the fields below act on that part -->
+    <div id="iso-bar" hidden style="display:flex;align-items:center;gap:8px;margin:-4px 0 10px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:11.5px;color:var(--dim)">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Editing inside <b id="iso-name" style="color:var(--ink)"></b></span>
+      <button class="chip" id="iso-done" title="Back to the whole layer (Esc)">Done</button>
+    </div>
 
     <div id="props-empty">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 15l4-4 4 4 4-6 4 4"/></svg>
@@ -971,6 +1303,8 @@
     </div>
 
     <div id="props-body">
+    <!-- quick-jump: a photo's Adjust / Geometry sections sit ~2 screens down the panel, so each selected layer gets chips for the sections it has -->
+    <div id="prop-jump" class="prop-jump" role="navigation" aria-label="Jump to section" hidden></div>
     <div class="grp" style="margin-top:0;padding-top:0;border-top:none">Stacking</div>
     <div style="display:flex;gap:6px">
       <button class="icon-btn" id="stack-top" title="Bring to front" style="width:auto;flex:1"></button>
@@ -982,6 +1316,11 @@
       <button class="act" id="group-btn" style="flex:1"></button>
       <button class="act" id="ungroup-btn" style="flex:1"></button>
     </div>
+    <div id="combine-section" hidden>
+      <div class="grp">Combine shapes</div>
+      <div class="cb-list" id="combine-list" role="menu" aria-label="Combine shapes"></div>
+      <div class="cb-hint" id="combine-hint"></div>
+    </div>
 
     <div class="grp">Canvas alignment</div>
     <div class="align-grid">
@@ -989,11 +1328,75 @@
       <button data-edge="top" title="Align top"></button><button data-edge="middle" title="Align middle"></button><button data-edge="bottom" title="Align bottom"></button>
     </div>
 
+    <!-- Position/size and layer blend come right after alignment (Figma's order): on a photo they used to sit
+         under ~1500px of adjustments. Content-specific sections (Adjust, Typography, Fill...) follow. -->
+    <div class="grp" id="sec-transform">Transform</div>
+    <div class="slider-row">Rotation <input type="range" id="xf-angle" min="0" max="360" value="0" data-unit="°"><span class="val"></span></div>
+    <div class="field-grid">
+      <label class="field">X <input type="number" id="xf-x"></label>
+      <label class="field">Y <input type="number" id="xf-y"></label>
+    </div>
+    <div class="field-grid">
+      <label class="field">W <input type="number" id="xf-w"></label>
+      <label class="field">H <input type="number" id="xf-h"></label>
+    </div>
+    <label style="display:flex;align-items:center;gap:7px;margin:2px 0 8px;font-size:12px;cursor:pointer">
+      <input type="checkbox" id="xf-keep-ratio" checked>
+      <span>Keep proportions</span>
+    </label>
+    <div class="field-grid">
+      <label class="field">Skew X <input type="number" id="xf-skewx"></label>
+      <label class="field">Skew Y <input type="number" id="xf-skewy"></label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <button class="act" id="flip-h" style="flex:1"></button>
+      <button class="act" id="flip-v" style="flex:1"></button>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="act" id="center-h" style="flex:1"></button>
+      <button class="act" id="center-v" style="flex:1"></button>
+    </div>
+
+    <div id="radius-section" style="display:none">
+      <div class="grp">Corner radius</div>
+      <div class="slider-row">Radius <input type="range" id="xf-rx" min="0" max="400" value="0" data-unit="px"><span class="val"></span></div>
+    </div>
+
+
+    <div class="grp">Blend &amp; opacity</div>
+    <div id="blend-mode"></div>
+    <div class="slider-row" style="margin-top:8px">Opacity <input type="range" id="layer-opacity" min="0" max="1" step="0.05" value="1" data-scale="100" data-unit="%"><span class="val"></span></div>
+
+
+    <div id="feather-section" style="display:none">
+      <div class="grp">Edge feather</div>
+      <div class="slider-row" title="Fade the layer's outline into what's behind it (Photoshop's Feather)">Feather <input type="range" id="xf-feather" min="0" max="150" value="0" data-unit="px"><span class="val"></span></div>
+    </div>
+
+
+    <div class="grp" id="sec-shadow">Shadow</div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <input type="color" id="shadow-color" value="#000000" title="shadow colour">
+      <div class="slider-row" style="flex:1">Blur <input type="range" id="shadow-blur" min="0" max="60" value="0" data-unit="px"><span class="val"></span></div>
+    </div>
+    <div class="field-grid">
+      <label class="field">Offset X <input type="number" id="shadow-offx" value="0"></label>
+      <label class="field">Offset Y <input type="number" id="shadow-offy" value="0"></label>
+    </div>
+    <button class="act" id="shadow-clear" style="width:100%;margin-top:8px">Clear shadow</button>
+
     <div id="adjust-section" style="display:none">
       <div class="grp" id="adjust-section-label">Adjust</div>
       <div class="note" id="adjust-section-note" style="display:none;margin-top:0">Affects every layer below this one in the stack.</div>
       <!-- rows generated from core's ADJUST_CONTROLS (shared with @canvasmith/react) -->
       <div id="adj-sliders"></div>
+      <!-- Match Color: pull this photo's colour balance toward another layer's (Editor#matchColor) -->
+      <div id="match-row" class="match-row" hidden>
+        <div class="adj-row match-head"><span style="display:flex" id="match-ico"></span><span class="lbl">Match color</span>
+          <select id="match-ref" aria-label="Match color to layer"></select></div>
+        <div class="adj-row" id="match-amount-row" hidden><span style="display:flex"></span><span class="lbl">Amount</span>
+          <input type="range" id="match-amount" aria-label="Match color amount" min="0" max="100" step="1" value="100"><span class="val" id="match-val">100</span></div>
+      </div>
       <button class="disclose" id="curves-toggle" aria-expanded="false"><span id="curves-caret" style="display:flex"></span>Curves<span class="dot" id="curves-dot" hidden title="Curves active"></span></button>
       <div class="curves" id="curves-panel" hidden>
         <div class="curves-tabs" role="tablist" id="curves-tabs"></div>
@@ -1008,7 +1411,7 @@
       <label class="adj-check-row"><span id="adj-invert-ico" style="display:flex"></span>Invert <input type="checkbox" class="adj-check" id="adj-invert"></label>
       <button class="act adj-reset" id="adj-reset"></button>
       <div id="geom-section">
-        <div class="grp">Geometry</div>
+        <div class="grp" id="sec-geometry">Geometry</div>
         <!-- rows generated from core's GEOMETRY_CONTROLS (shared with @canvasmith/react) -->
         <div id="geom-sliders"></div>
         <div style="display:flex;gap:6px;margin-top:10px">
@@ -1019,10 +1422,25 @@
     </div>
 
     <div id="typography-section" style="display:none">
-      <div class="grp" style="margin-top:0;padding-top:0;border-top:none">Typography</div>
+      <div class="grp">Typography</div>
       <div class="popover-anchor" id="tx-font-anchor">
         <button class="act" id="tx-font-btn" style="justify-content:space-between"><span id="tx-font-current">Choose a font…</span><span id="tx-font-caret"></span></button>
-        <div class="popover" id="tx-font-pop" hidden style="width:100%;max-height:280px;overflow-y:auto;left:0;right:auto;padding:6px"></div>
+        <div class="popover" id="tx-font-pop" hidden style="width:100%;max-height:430px;flex-direction:column;left:0;right:auto;padding:0">
+          <div class="fp-head">
+            <div class="fp-search">
+              <span class="ico" id="fp-q-ico"></span>
+              <input id="tx-font-google" type="text" placeholder="Search Google Fonts" aria-label="Search Google Fonts" spellcheck="false" autocomplete="off">
+              <button id="fp-q-clear" type="button" aria-label="Clear search" hidden></button>
+            </div>
+            <div class="fp-chips" id="tx-font-chips" role="tablist"></div>
+          </div>
+          <div id="tx-font-list" class="fp-list"></div>
+          <div class="fp-foot">
+            <button type="button" id="tx-font-upload" title="Upload .ttf, .otf, .woff or .woff2"><span id="fp-up-ico"></span>Upload font file</button>
+            <span>.ttf · .otf · .woff</span>
+            <input id="tx-font-file" type="file" accept=".ttf,.otf,.woff,.woff2" hidden>
+          </div>
+        </div>
       </div>
       <div class="field-grid">
         <label class="field">Size <input type="number" id="tx-size" min="1" max="800"></label>
@@ -1041,8 +1459,8 @@
         <button class="icon-btn" id="tx-align-center" style="width:auto;flex:1" title="Align center"></button>
         <button class="icon-btn" id="tx-align-right" style="width:auto;flex:1" title="Align right"></button>
       </div>
-      <div class="slider-row" style="margin-top:8px">Line height <input type="range" id="tx-lineheight" min="0.8" max="2.5" step="0.05"></div>
-      <div class="slider-row" style="margin-top:6px">Letter spacing <input type="range" id="tx-spacing" min="-100" max="800" step="10"></div>
+      <div class="slider-row" style="margin-top:8px">Line height <input type="range" id="tx-lineheight" min="0.8" max="2.5" step="0.05" data-digits="2"><span class="val"></span></div>
+      <div class="slider-row" style="margin-top:6px">Letter spacing <input type="range" id="tx-spacing" min="-100" max="800" step="10" data-scale="0.001" data-digits="2" data-unit="em"><span class="val"></span></div>
     </div>
 
     <div class="grp" id="fill-section-label">Fill</div>
@@ -1062,7 +1480,7 @@
           <button class="act" id="fg-type-radial" style="flex:1">Radial</button>
           <button type="button" class="paint-eye" data-paint="fill"></button>
         </div>
-        <div class="slider-row" id="fg-angle-row" style="margin-top:8px">Angle <input type="range" id="fg-angle" min="0" max="360" value="0"></div>
+        <div class="slider-row" id="fg-angle-row" style="margin-top:8px">Angle <input type="range" id="fg-angle" min="0" max="360" value="0"><span class="tag mono" id="fg-angle-val">0°</span></div>
         <div id="fg-stops" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
         <button class="act" id="fg-add-stop" style="width:100%;margin-top:6px">+ Add stop</button>
       </div>
@@ -1091,48 +1509,6 @@
       </div>
     </div>
 
-    <div id="radius-section" style="display:none">
-      <div class="grp">Corner radius</div>
-      <div class="slider-row">Radius <input type="range" id="xf-rx" min="0" max="400" value="0" data-unit="px"><span class="val"></span></div>
-    </div>
-
-    <div class="grp">Blend &amp; opacity</div>
-    <select id="blend-mode" style="width:100%"></select>
-    <div class="slider-row" style="margin-top:8px">Opacity <input type="range" id="layer-opacity" min="0" max="1" step="0.05" value="1" data-scale="100" data-unit="%"><span class="val"></span></div>
-
-    <div class="grp">Transform</div>
-    <div class="slider-row">Rotation <input type="range" id="xf-angle" min="0" max="360" value="0" data-unit="°"><span class="val"></span></div>
-    <div class="field-grid">
-      <label class="field">X <input type="number" id="xf-x"></label>
-      <label class="field">Y <input type="number" id="xf-y"></label>
-    </div>
-    <div class="field-grid">
-      <label class="field">W <input type="number" id="xf-w"></label>
-      <label class="field">H <input type="number" id="xf-h"></label>
-    </div>
-    <div class="field-grid">
-      <label class="field">Skew X <input type="number" id="xf-skewx"></label>
-      <label class="field">Skew Y <input type="number" id="xf-skewy"></label>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:8px">
-      <button class="act" id="flip-h" style="flex:1"></button>
-      <button class="act" id="flip-v" style="flex:1"></button>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="act" id="center-h" style="flex:1"></button>
-      <button class="act" id="center-v" style="flex:1"></button>
-    </div>
-
-    <div class="grp">Shadow</div>
-    <div style="display:flex;gap:10px;align-items:center">
-      <input type="color" id="shadow-color" value="#000000" title="shadow colour">
-      <div class="slider-row" style="flex:1">Blur <input type="range" id="shadow-blur" min="0" max="60" value="0"></div>
-    </div>
-    <div class="field-grid">
-      <label class="field">Offset X <input type="number" id="shadow-offx" value="0"></label>
-      <label class="field">Offset Y <input type="number" id="shadow-offy" value="0"></label>
-    </div>
-    <button class="act" id="shadow-clear" style="width:100%;margin-top:8px">Clear shadow</button>
     </div>
     </div>
 
@@ -1141,7 +1517,7 @@
       <div style="display:flex;flex-direction:column;gap:6px">
         <button class="act" id="design-extend-bg" style="width:100%"></button>
         <button class="act" id="design-ai-extend-bg" style="width:100%"></button>
-        <label class="act" id="design-fill-color-label" style="width:100%;position:relative;display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer">
+        <label class="act" id="design-fill-color-label" style="width:100%;position:relative;padding:8px 11px;border-radius:9px;display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer">
           <span id="design-fill-color-label-text" style="display:flex;align-items:center;gap:7px"></span>
           <input type="color" id="design-fill-color" style="position:absolute;width:1px;height:1px;opacity:0">
         </label>
@@ -1170,9 +1546,24 @@
       </div>
     </div>
     <div id="stickers-panel" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto">
-      <div class="grp" style="margin-top:0;padding-top:0;border-top:none">Stickers</div>
-      <div id="sticker-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
-      <div id="sticker-grid"></div>
+      <div class="seg" id="stk-seg" role="tablist" style="margin-bottom:12px">
+        <button class="act" role="tab" data-v="shapes" data-on="true">Shapes</button>
+        <button class="act" role="tab" data-v="icons" data-on="false">Icons</button>
+      </div>
+      <div id="stk-shapes">
+        <div id="sticker-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+        <div id="sticker-grid"></div>
+      </div>
+      <div id="stk-icons" hidden>
+        <div class="icon-search">
+          <span class="ico" id="icon-q-ico"></span>
+          <input id="icon-q" type="text" placeholder="Search 200,000+ free icons" aria-label="Search icons" spellcheck="false" autocomplete="off">
+          <button id="icon-q-clear" type="button" aria-label="Clear search" hidden></button>
+        </div>
+        <div id="icon-sugg" class="icon-sugg"></div>
+        <div class="icon-meta"><span id="icon-status"></span><span class="icon-credit">Free · Iconify</span></div>
+        <div id="icon-grid"></div>
+      </div>
     </div>
     <div id="ai-panel" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto">
       <div class="aix">
@@ -1262,7 +1653,7 @@
 
 <!-- Compare: side-by-side view of the first-loaded image vs. the current canvas render. -->
 <div id="toast-wrap" aria-live="polite"></div>
-<div id="compare-backdrop" hidden>
+<div id="compare-backdrop" role="dialog" aria-modal="true" aria-labelledby="compare-title" hidden>
   <div id="compare-box">
     <div id="compare-header">
       <div>
@@ -1279,12 +1670,12 @@
 </div>
 
 <script type="module">
-import { Editor, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, rgba, splitGradientStopColor, GeminiProvider, installBridge, installDropImport, selectionToPath2D, selectionPolys, makeShape, makeText, installKeybindings, TOOL_KEYS, FONT_GROUPS, FONT_STYLESHEET_URL, STICKER_GROUPS, stickerSpec, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME,
+import { Editor, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, rgba, splitGradientStopColor, GeminiProvider, installBridge, installDropImport, selectionToPath2D, selectionPolys, makeShape, makeText, installKeybindings, installVoice, installColorPicker, trapDialog, mountBlendPicker, TOOL_KEYS, FONT_GROUPS, FONT_STYLESHEET_URL, addGoogleFont, addCustomFont, restoreUserFonts, searchGoogleFonts, loadFontPreviews, GOOGLE_FONT_CATEGORIES, searchIcons, iconUrl, ICON_SUGGESTIONS, STICKER_GROUPS, stickerSpec, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME,
   startSelection, updateSelection, finalizeSelection, startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild,
-  snapToEdge, selectionBounds, uid, PAINT_TOOLS, SHAPE_TOOLS, SEL_TOOLS, installAutosave, restoreSession,
+  snapToEdge, selectionBounds, uid, PAINT_TOOLS, SHAPE_TOOLS, SEL_TOOLS, installAutosave, restoreSession, readSession, DocumentSet, MAX_DOCS,
   discardToTrash, restoreDiscarded, exportProject, loadProject, FX_DEFAULTS, ADJUST_CONTROLS, formatAdjustValue, GEOMETRY_DEFAULTS, GEOMETRY_CONTROLS, formatGeometryValue,
   HSL_BANDS, HSL_PROPS, hslBandLabel, getHslValue, setHslValue, hslBandTrack,
-  CURVE_CHANNELS, normalizeCurves, compactCurves, curveHitTest, curveInsertPoint, curveMovePoint, curveRemovePoint, curveSvgPath, drawPenOverlay, drawPickSpinner, mountContextMenu, strokeInfo }
+  CURVE_CHANNELS, normalizeCurves, compactCurves, curveHitTest, curveInsertPoint, curveMovePoint, curveRemovePoint, curveSvgPath, drawPenOverlay, drawPickSpinner, mountContextMenu, strokeInfo, imageLayerName, stickerLabel, rankCommands, layerLabel }
   from '../../packages/core/src/index.js';
 
 /* The fabric <canvas> element is sized to fill the STAGE (like the reference editor's fitView),
@@ -1346,7 +1737,7 @@ const ICON_PATHS = {
   similar: 'circle:7,7,3|circle:17,7,3|circle:7,17,3|circle:17,17,3',
   shadow: 'rect:5,4,14,14,2 M9 22h10a2 2 0 0 0 2-2V10',
   svg: 'm8 3 4 4 4-4M12 7v10M5 21h14',
-  rect: 'M3 8l9-5 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8',                     // ditto's box
+  rect: 'rect:3,6,18,12,2',                                                  // a plain rectangle: the Rectangle tool, shape layers (ditto drew a 3D box, which read as a 3D tool)
   ellipse: 'ellipse:12,12,9,7',
   image: 'rect:3,4,18,16,2|circle:9,10,2|M21 17l-5-5-8 8',                        // + menu's Image… (same glyph as @canvasmith/react's image icon)
   line: 'M4 8h10M18 8h2M4 16h2M10 16h10M14 6v4M6 14v4',                       // ditto's sliders
@@ -1393,6 +1784,8 @@ const ICON_PATHS = {
   contrast: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18',                  // ditto's contrast
   droplet: 'M12 3s6 5.7 6 10a6 6 0 0 1-12 0c0-4.3 6-10 6-10z',               // ditto's droplet, for Saturation
   blurfilter: 'M4 5h16l-6 8v5l-4 2v-7L4 5z',                                 // ditto's filter, for Blur
+  sharpen: 'M12 4l9 15H3L12 4zM12 10v4',                                     // Sharpen: a crisp-edged triangle
+  radius: 'M12 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M12 12m-8 0a8 8 0 1 0 16 0a8 8 0 1 0 -16 0',   // Radius: a dot inside a ring
   lock: 'M6 11V8a6 6 0 0 1 12 0v3M5 11h14v9H5z',
   unlock: 'M6 11V8a6 6 0 0 1 11.2-3M5 11h14v9H5z',
   magnet: 'M6 4v7a6 6 0 0 0 12 0V4M6 4h4v7a2 2 0 0 0 4 0V4h4M6 8h4M14 8h4',
@@ -1400,9 +1793,19 @@ const ICON_PATHS = {
   addcircle: 'circle:12,12,9|M12 8v8M8 12h8',
   scissors: 'circle:6,6,3|circle:6,18,3|M8.1 8.1 20 20M8.1 15.9 20 4',
   aa: 'M4 18 8 6l4 12M5.5 14h5M14 18v-5a2.5 2.5 0 0 1 5 0v5M14 15.5h5',                            // ditto's lock, for the per-layer lock toggle
+  width: 'M4 6v12M20 6v12M4 12h16M8 8l-4 4 4 4M16 8l4 4-4 4',      // frame/canvas width: bars + double arrow
+  height: 'M6 4h12M6 20h12M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4',     // frame/canvas height
+  union: 'fillrect:3,3,12,12,2|fillrect:9,9,12,12,2',
+  subtract: 'fillrect:3,3,12,12,2|rect:9,9,12,12,2',
+  intersect: 'rect:3,3,12,12,2|rect:9,9,12,12,2|fillrect:9,9,6,6,1',
+  exclude: 'rect:3,3,12,12,2|rect:9,9,12,12,2|M9.5 9.5l5 5M14.5 9.5l-5 5',
+  flatten: 'M12 4v11M7 11l5 5 5-5M5 20h14',
+  frame: 'M7 3v18M17 3v18M3 7h18M3 17h18',   // Figma-style frame glyph (Layers panel frame folders)
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',  // Open image (header)
   mask: 'circle:12,12,9|M12 3v18',                                          // half-tone circle: layer mask affordance (canvasmith-only, no reference counterpart)
+  maskoff: 'circle:12,12,9|M12 3v18|M4 20 20 4',                              // the mask glyph struck through: delete a layer's mask (never the × that deletes the layer)
   'align-left': 'M3 2v20|fillrect:6,6,7,4,1|fillrect:6,14,12,4,1',
+  'text-left': 'M4 6h16M4 10h10M4 14h16M4 18h10', 'text-center': 'M4 6h16M7 10h10M4 14h16M7 18h10', 'text-right': 'M4 6h16M10 10h10M4 14h16M10 18h10',
   'align-h-center': 'M12 2v20|fillrect:8.5,6,7,4,1|fillrect:6,14,12,4,1',
   'align-right': 'M21 2v20|fillrect:11,6,7,4,1|fillrect:6,14,12,4,1',
   'align-top': 'M2 3h20|fillrect:6,6,4,7,1|fillrect:14,6,4,12,1',
@@ -1410,6 +1813,7 @@ const ICON_PATHS = {
   'align-bottom': 'M2 21h20|fillrect:6,11,4,7,1|fillrect:14,6,4,12,1',
   minus: 'M5 12h14',
   plus: 'M12 5v14M5 12h14',
+  mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 11a7 7 0 0 0 14 0M12 18v3',
   maximize: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
   pen: 'M12 3l7 7-9 9-5 1 1-5 6-6 2 2M11 6l4 4',
   search: 'circle:11,11,7|M21 21l-4.35-4.35',
@@ -1438,7 +1842,7 @@ ICON_PATHS.eyeOpen = EYE_OPEN; ICON_PATHS.eyeOff = EYE_OFF;
 
 /* ── theme toggle: swaps the light/dark palette via a data-mode attribute ── */
 const themeBtn = document.getElementById('theme-toggle');
-const applyMode = m => { document.documentElement.dataset.mode = m; themeBtn.innerHTML = iconSVG(m === 'dark' ? 'sun' : 'moon'); ed.setVoidColor(stageVoidColor()); };
+const applyMode = m => { document.documentElement.dataset.mode = m; themeBtn.innerHTML = iconSVG(m === 'dark' ? 'sun' : 'moon'); ed.setVoidColor(stageVoidColor()); ed.setAccent(getComputedStyle(document.documentElement).getPropertyValue('--accent-fill').trim() || undefined); };
 applyMode(document.documentElement.dataset.mode || 'dark');
 themeBtn.onclick = () => applyMode(document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark');
 
@@ -1452,8 +1856,18 @@ const drawOverlays = () => {
   // marquee/group-selection box (renderTopLayer, called just before this fires from
   // renderTop's after:render). Redraw that layer first so our own overlay below doesn't erase it.
   ed.fc.renderTopLayer(ctx);
+  // Fabric draws an editing IText's caret and selection highlight on this same context, so
+  // clearing it blind hides both. Redraw them (renderCursorOrSelection clears + repaints itself).
+  const editing = ed.fc.getActiveObject();
+  if (editing && editing.isEditing && editing.renderCursorOrSelection) editing.renderCursorOrSelection();
   const v = ed.fc.viewportTransform;
   ctx.save(); ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+  // A detected subject hovered in the AI Vision list: outline its box so the rows can be told apart.
+  if (detectHoverBox) {
+    const b = detectHoverBox;
+    ctx.save(); ctx.lineWidth = 2 / v[0]; ctx.setLineDash([6 / v[0], 4 / v[0]]); ctx.strokeStyle = '#0b6bd3';
+    ctx.fillStyle = 'rgba(11,107,211,0.10)'; ctx.fillRect(b.x, b.y, b.w, b.h); ctx.strokeRect(b.x, b.y, b.w, b.h); ctx.restore();
+  }
   if (ed.selection) {
     const p = selectionToPath2D(ed.selection, ed.W, ed.H);
     ctx.lineWidth = 1.6 / v[0];
@@ -1472,10 +1886,15 @@ const drawOverlays = () => {
     // check) — draw the same 8 corner/edge handles as the crop tool so that's discoverable,
     // only while a marquee tool is active so other tools' selection outline stays uncluttered.
     const s = ed.selection;
-    if ((s.kind === 'rect' || s.kind === 'ellipse') && (ed.tool === 'marquee' || ed.tool === 'marquee-ellipse')) {
-      const hs = 4.5 / v[0]; ctx.fillStyle = '#d4ff45'; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.lineWidth = 1 / v[0];
-      for (const [hx, hy] of [[s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h],
-                              [s.x + s.w / 2, s.y], [s.x + s.w / 2, s.y + s.h], [s.x, s.y + s.h / 2], [s.x + s.w, s.y + s.h / 2]]) {
+    if (SEL_TOOLS.includes(ed.tool) && !s.building && !ed._polyBuild) {
+      const sb = selectionBounds(s, ed.W, ed.H), hs = 4.5 / v[0]; ctx.fillStyle = '#d4ff45'; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.lineWidth = 1 / v[0];
+            if ((s.kind === 'poly' || s.kind === 'multipoly')) {   // the outline's own points: drag one to reshape the selection from the inside
+        const rings = s.kind === 'multipoly' ? s.polys : [s.pts]; let n = 0; rings.forEach(r => { n += r.length; });
+        if (n <= 600) { ctx.fillStyle = '#ffffff'; ctx.strokeStyle = 'rgba(0,0,0,.85)'; for (const r of rings) for (const q of r) { ctx.beginPath(); ctx.arc(q.x, q.y, 3.2 / v[0], 0, 7); ctx.fill(); ctx.stroke(); } }
+        ctx.fillStyle = '#d4ff45';
+      }
+      if (s.kind === 'rect' || s.kind === 'ellipse') for (const [hx, hy] of [[sb.x, sb.y], [sb.x + sb.w, sb.y], [sb.x, sb.y + sb.h], [sb.x + sb.w, sb.y + sb.h],
+                              [sb.x + sb.w / 2, sb.y], [sb.x + sb.w / 2, sb.y + sb.h], [sb.x, sb.y + sb.h / 2], [sb.x + sb.w, sb.y + sb.h / 2]]) {
         ctx.beginPath(); ctx.arc(hx, hy, hs, 0, 7); ctx.fill(); ctx.stroke();
       }
     }
@@ -1720,7 +2139,18 @@ function startAntsLoopIfNeeded() {
 /* Shared shortcut set — undo/redo, copy/paste, delete-active-layer, poly-lasso Enter/Escape,
    single-letter tool switch, arrow-key nudge. Lives in core (keybindings.js) so the demo and the
    React shell can't drift the way the Properties panel once did. */
+/* Escape with a popover/menu open closes just that — it must not also reach the editor's Escape
+   (deselect / cancel), which dropped the layer the popover was about. Capture phase, so it runs first. */
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const open = [...document.querySelectorAll('.popover:not([hidden]), #export-menu:not([hidden])')];
+  if (!open.length) return;
+  open.forEach(p => { p.hidden = true; });
+  if (!exportMenu.hidden || open.includes(exportMenu)) setExportMenuOpen(false);
+  e.preventDefault(); e.stopPropagation();
+}, true);
 installKeybindings(ed, document, { toolGroups: () => TOOLGROUPS.map(g => g.map(t => t.id)) });   // lazy: TOOLGROUPS is defined further down
+installColorPicker();   // Adobe-style popover replaces every native colour dialog
 // Right-click menu (core builds the items, mountContextMenu draws them — shared with the React shell)
 mountContextMenu(ed, { vars: { panel: 'var(--panel-2)', line: 'var(--line)', ink: 'var(--ink)', dim: 'var(--dim-2)', hover: 'var(--accent)', hoverInk: 'var(--accent-ink)', danger: 'var(--danger)' } });
 
@@ -1755,7 +2185,9 @@ const TOOL_HINTS = {
   pen: 'Click for a corner, click-drag for a curve (⌥ breaks the handles, ⇧ snaps to 45°, Space moves the point). Click the first point to close into a filled shape; Enter/Esc keeps an open stroke. ⌫ removes the last point. With a path selected: click its outline to add a point, a point to delete it, an open end to continue.',
   aiinsert: 'AI insert · click a spot to draw there — or make a selection first and click inside it: the AI fills exactly that shape',
   clone: 'Alt-click (⌥) or Shift-click (⇧) to set the source point, then paint elsewhere to stamp those pixels. Click again with either to re-source.',
-  heal: 'Alt-click (⌥) or Shift-click (⇧) to set the source point, then paint over the blemish — the patch is blended into its surroundings.',
+  // a plain stroke heals from the surroundings now (spot heal) — the source point is optional
+  heal: 'Paint over a blemish and it is filled in from its surroundings. To copy from a chosen spot instead, ⌥-click (or ⇧-click) that spot first, then paint.',
+  type: 'Click on the canvas to add text. Double-click any text to edit it.',
 };
 const TOOLGROUPS = [
   [{ id: 'select', icon: 'select' }, { id: 'hand', icon: 'hand' }],
@@ -1890,9 +2322,10 @@ function refreshToolHint() {
     : 'Editing the image itself (the selected layer, or the top image), at its own resolution.';
   document.getElementById('clone-section').style.display = isClone ? '' : 'none';
   if (!isClone) return;
-  document.getElementById('clone-title').textContent = t === 'heal' ? 'Healing brush' : 'Clone stamp';
+  document.getElementById('clone-title').textContent = t === 'heal' ? 'Heal from a chosen spot (optional)' : 'Clone stamp';
   document.getElementById('clone-status').textContent = src
     ? 'Source set at ' + Math.round(src.x) + ', ' + Math.round(src.y) + ' — now paint to ' + (t === 'heal' ? 'heal with' : 'stamp') + ' those pixels.'
+    : t === 'heal' ? 'No source: strokes heal from the surroundings. ⌥/⇧-click a spot to heal from it instead.'
     : 'Step 1 — hold ⌥ (Alt) or ⇧ (Shift) and click the area you want to copy FROM.';
   document.getElementById('clone-reset').disabled = !src;
 }
@@ -2015,18 +2448,16 @@ function cropBtn(on) {
     // aren't prepended in front of it (i.e. every OTHER tool).
     ratios.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line-soft)';
     ratios.innerHTML = CROP_RATIOS.map(([label]) => `<button class="chip" data-label="${label}">${label}</button>`).join('');
-    const syncRatioChips = () => {
-      const cur = ed.toolOpts.cropRatio || 0;
-      ratios.querySelectorAll('button').forEach(btn => {
-        const [, r] = CROP_RATIOS.find(([l]) => l === btn.dataset.label);
-        btn.dataset.on = String(r === 'orig' ? cur === (ed.W / ed.H) : cur === r);
-      });
-    };
+    // The chip the user picked is the one lit — comparing ratios would light two at once whenever
+    // the original's shape is also a preset (a 9:16 photo: Original and 9:16).
+    let picked = (ed.toolOpts.cropRatio || 0) ? null : 'Free';
+    const syncRatioChips = () => ratios.querySelectorAll('button').forEach(btn => { btn.dataset.on = String(btn.dataset.label === picked); });
     ratios.addEventListener('click', e => {
       const label = e.target.closest('button')?.dataset.label; if (!label) return;
       const [, r] = CROP_RATIOS.find(([l]) => l === label);
-      const ratio = r === 'orig' ? ed.W / ed.H : r;
-      ed.setToolOptions({ cropRatio: ratio });
+      picked = label;
+      // "Original" is the shape of what's being cropped (the image layer), not the page.
+      ed.setToolOptions({ cropRatio: r === 'orig' ? ed.cropOriginalRatio() : r });
       syncRatioChips();
     });
     syncRatioChips();
@@ -2060,6 +2491,13 @@ brushSwatchesEl.innerHTML = BRUSH_SWATCHES.map(c => `<button class="swatch-btn" 
 function refreshSwatchSelection() {
   brushSwatchesEl.querySelectorAll('.swatch-btn').forEach(b => { b.dataset.on = String(b.dataset.color.toLowerCase() === (ed.toolOpts.color || '').toLowerCase()); });
 }
+// A mask is only ever black (hide) or white (reveal): while editing one, the colour swatches and
+// picker would only offer choices that paint as grey.
+const MASK_SWATCHES = ['#ffffff', '#000000'];
+ed.on('maskedit', m => {
+  brushSwatchesEl.querySelectorAll('.swatch-btn').forEach(b => { b.style.display = m && !MASK_SWATCHES.includes(b.dataset.color) ? 'none' : ''; });
+  brushColor.style.display = m ? 'none' : '';
+});
 brushSwatchesEl.addEventListener('click', e => {
   const c = e.target.closest('[data-color]')?.dataset.color; if (!c) return;
   ed.setToolOptions({ color: c, fill: c });
@@ -2083,6 +2521,16 @@ ed.on('tool', t => {
   document.getElementById('brush-color-row').style.display = ['eraser', 'clone', 'heal', 'dodge', 'burn', 'sponge', 'redeye'].includes(t) ? 'none' : 'flex';
   brushSectionLabel.textContent = t === 'eraser' ? 'Eraser' : isPaint ? 'Brush' : 'Color';
 });
+const toolTolRow = document.getElementById('tool-tol-row'), toolTol = document.getElementById('tool-tol'), toolTolVal = document.getElementById('tool-tol-val');
+const tolKey = () => ed.tool === 'bucket' ? 'bucketTolerance' : 'tolerance';
+const refreshToolTol = () => {
+  const on = ed.tool === 'wand' || ed.tool === 'bucket';
+  toolTolRow.style.display = on ? '' : 'none';
+  if (!on) return;
+  toolTol.value = ed.toolOpts[tolKey()] != null ? ed.toolOpts[tolKey()] : 32; toolTolVal.textContent = toolTol.value; paintRangeFill(toolTol);
+};
+toolTol.oninput = () => { ed.setToolOptions({ [tolKey()]: +toolTol.value }); toolTolVal.textContent = toolTol.value; };
+ed.on('tool', refreshToolTol); ed.on('tooloptions', refreshToolTol);
 ed._emit('tool', ed.tool);              // initial paint of the brush section's visibility
 ed._emit('tooloptions', ed.toolOpts);   // initial paint of the brush section's values
 undo.innerHTML = iconSVG('undo'); redo.innerHTML = iconSVG('redo');
@@ -2099,7 +2547,18 @@ document.getElementById('cmdk-open').onclick = () => cmdkOpen();
 const compareBtn = document.getElementById('compare-btn');
 compareBtn.innerHTML = '<span>Compare</span>';
 let _compareSnapshot = null;
-ed.on('change', () => { if (!_compareSnapshot) { _compareSnapshot = ed.exportPNG(); compareBtn.disabled = false; } });
+// Opening an image starts a new document: IT is the "original" Compare shows, not whatever the
+// first edit before it happened to be (a blank canvas resized to 4:5, say).
+// A document started from scratch has nothing to compare against until something is on it: keep
+// re-taking the baseline while the page is empty (it showed a blank page at the OLD size), and
+// leave Compare off until then.
+let _compareFromEmpty = false;
+ed.on('change', (e) => {
+  if (!_compareSnapshot || _compareFromEmpty || (e && e.label === 'open')) {
+    const empty = !ed.fc.getObjects().length;
+    _compareSnapshot = ed.exportPNG(); _compareFromEmpty = empty; compareBtn.disabled = empty;
+  }
+});
 const compareBackdrop = document.getElementById('compare-backdrop');
 document.getElementById('compare-close').innerHTML = iconSVG('close', 14) + '<span>Close</span>';
 function openCompare() {
@@ -2107,8 +2566,10 @@ function openCompare() {
   document.getElementById('compare-img-before').src = _compareSnapshot;
   document.getElementById('compare-img-after').src = ed.exportPNG();
   compareBackdrop.hidden = false;
+  _compareRelease = trapDialog(compareBackdrop, { initial: '#compare-close' });   // focus in, Tab kept inside, restored on close
 }
-function closeCompare() { compareBackdrop.hidden = true; }
+let _compareRelease = null;
+function closeCompare() { compareBackdrop.hidden = true; if (_compareRelease) { _compareRelease(); _compareRelease = null; } }
 compareBtn.onclick = openCompare;
 document.getElementById('compare-close').onclick = closeCompare;
 compareBackdrop.addEventListener('click', e => { if (e.target === compareBackdrop) closeCompare(); });
@@ -2125,6 +2586,7 @@ let csRatio = ed.W / ed.H;
 const CANVAS_PRESETS = [
   ['Social', [
     ['Instagram post (1:1)', 1080, 1080],
+    ['Instagram portrait (4:5)', 1080, 1350],
     ['Instagram story (9:16)', 1080, 1920],
     ['Facebook cover', 820, 312],
     ['Twitter/X post', 1200, 675],
@@ -2180,6 +2642,44 @@ document.getElementById('cs-apply').onclick = () => {
 document.addEventListener('click', e => {
   if (!csPop.hidden && !csPop.contains(e.target) && e.target !== csBtn) csPop.hidden = true;
 });
+/* ── feather popover: always reachable; edits the pixel selection if there is one, else the active image layer ── */
+const featherBtn = document.getElementById('feather-btn'), featherPop = document.getElementById('feather-pop');
+const featherSlider = document.getElementById('feather-slider'), featherValEl = document.getElementById('feather-val');
+const featherTargetEl = document.getElementById('feather-target'), featherHintEl = document.getElementById('feather-hint');
+const featherTarget = () => ed.featherTarget();
+const refreshFeatherPop = () => {
+  const t = featherTarget();
+  featherSlider.disabled = !t; featherSlider.value = t ? t.value : 0; featherValEl.textContent = featherSlider.value + 'px';
+  featherTargetEl.textContent = t ? (t.kind === 'selection' ? 'Applies to: selection' : 'Applies to: selected image') : 'Nothing to feather yet';
+  featherHintEl.textContent = !t ? 'Select an image layer, or draw a marquee/lasso selection, then drag the slider.'
+    : t.kind === 'selection' ? 'Shows when you copy (⌘J), move or recolor the selection.' : 'Fades the image edges into what is behind it.';
+  syncFeatherMode();
+};
+featherBtn.onclick = () => {
+  refreshFeatherPop();
+  const r = featherBtn.getBoundingClientRect();
+  featherPop.style.position = 'fixed'; featherPop.style.top = (r.bottom + 8) + 'px'; featherPop.style.right = 'auto'; featherPop.style.left = Math.max(8, r.left) + 'px';
+  featherPop.hidden = !featherPop.hidden;
+};
+let featherMode = 'mask';   // image layers only: live non-destructive mask, or bake into the pixels
+const featherModeRow = document.getElementById('feather-mode-row'), featherApply = document.getElementById('feather-apply');
+const syncFeatherMode = () => {
+  const t = featherTarget(), layer = !!t && t.kind === 'layer';
+  featherModeRow.hidden = !layer; featherApply.hidden = !(layer && featherMode === 'layer');
+  featherModeRow.querySelectorAll('button').forEach(b => b.dataset.on = String(b.dataset.m === featherMode));
+  if (layer && featherMode === 'layer') featherHintEl.textContent = 'Permanently fades the image pixels. Pick a size, then Apply (undo to revert).';
+};
+featherModeRow.onclick = e => { const b = e.target.closest('button'); if (!b) return; featherMode = b.dataset.m; syncFeatherMode(); };
+featherApply.onclick = () => { const r = ed.setEdgeFeather(null, +featherSlider.value, { bake: true }); featherHintEl.textContent = r.status === 'ok' ? 'Applied to the layer — undo to revert.' : 'Choose a size above 0 first.'; };
+featherSlider.oninput = () => {
+  const t = featherTarget(); if (!t) return;
+  featherValEl.textContent = featherSlider.value + 'px';
+  if (t.kind === 'selection') ed.featherSelection(+featherSlider.value);
+  else if (featherMode === 'mask') ed.setEdgeFeather(null, +featherSlider.value);   // 'layer' mode waits for Apply
+};
+document.addEventListener('click', e => { if (!featherPop.hidden && !featherPop.contains(e.target) && !featherBtn.contains(e.target)) featherPop.hidden = true; });
+['selection', 'change'].forEach(ev => ed.on(ev, () => { if (!featherPop.hidden && document.activeElement !== featherSlider) refreshFeatherPop(); }));
+
 /* ── export image: one button, a small dropdown for the format (PNG/JPG/SVG) ─────────────── */
 const exportBtn = document.getElementById('export-btn'), exportMenu = document.getElementById('export-menu');
 document.getElementById('export-caret').innerHTML = iconSVG('chevron', 10);
@@ -2194,6 +2694,10 @@ const scaleSuffix = () => (exportScale === 1 ? '' : '@' + exportScale + 'x');
 const EXPORTERS = {
   png: () => dl(ed.exportPNG(exportScale), `canvasmith${scaleSuffix()}.png`),
   jpg: () => dl(ed.exportJPEG(0.92, exportScale), `canvasmith${scaleSuffix()}.jpg`),
+  frames: () => {
+    ed.exportAllFrames('png', exportScale).forEach((f, i) => setTimeout(() => dl(f.url, `${f.name.replace(/[^\w\- ]+/g, '').trim() || 'frame'}${scaleSuffix()}.png`), i * 250));
+    refreshCanvasSection();
+  },
   svg: () => {
     const blob = new Blob([ed.exportSVG()], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
@@ -2204,7 +2708,7 @@ const EXPORTERS = {
      there was no way to get layers, masks and adjustments out of the browser at all — no backup,
      no moving machines, no handing the file to someone else. */
   project: () => {
-    const blob = new Blob([exportProject(ed, { assets })], { type: 'application/json' });
+    const blob = new Blob([exportProject(ed, { assets }, docs)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     dl(url, 'canvasmith-project.canvasmith');
     URL.revokeObjectURL(url);
@@ -2212,6 +2716,7 @@ const EXPORTERS = {
 };
 const exportDims = document.getElementById('export-dims');
 function refreshExportDims() {
+  document.getElementById('export-all-frames').hidden = ed.frameList().length < 2;
   exportDims.textContent = Math.round(ed.W * exportScale) + ' \u00d7 ' + Math.round(ed.H * exportScale) + ' px';
 }
 const setExportMenuOpen = open => { exportMenu.hidden = !open; exportBtn.dataset.open = String(open); if (open) refreshExportDims(); };
@@ -2242,7 +2747,7 @@ projectInput.onchange = () => {
   const r = new FileReader();
   r.onload = async () => {
     try {
-      const extras = await loadProject(ed, r.result);
+      const extras = await loadProject(ed, r.result, docs);
       if (Array.isArray(extras.assets)) { assets = extras.assets; renderAssets(); }
       if (extras.compare) { _compareSnapshot = extras.compare; compareBtn.disabled = false; }
       fitToScreen();
@@ -2280,17 +2785,32 @@ function setZoomAtCenter(z) {
 function fitToScreen() {
   if (!stageEl.clientWidth || !stageEl.clientHeight) return false;
   ed.fc.setDimensions({ width: stageEl.clientWidth, height: stageEl.clientHeight });
-  const pad = 48;
-  const availW = Math.max(50, stageEl.clientWidth - pad), availH = Math.max(50, stageEl.clientHeight - pad);
+  const pad = 48, top = 0;
+  const availW = Math.max(50, stageEl.clientWidth - pad), availH = Math.max(50, stageEl.clientHeight - pad - top);
   const z = Math.min(2, Math.max(0.05, Math.min(availW / ed.W, availH / ed.H)));
   ed.fc.setZoom(z);
   const vpt = ed.fc.viewportTransform.slice();
   vpt[4] = (stageEl.clientWidth - ed.W * z) / 2;
-  vpt[5] = (stageEl.clientHeight - ed.H * z) / 2;
+  vpt[5] = top + (stageEl.clientHeight - top - ed.H * z) / 2;
   ed.fc.setViewportTransform(vpt);
   ed.fc.calcOffset();
   ed.fc.requestRenderAll();
   refreshZoomUI();
+  return true;
+}
+/* "Fit all": with several frames on the page, show them all side by side (Figma's Shift+1). Falls
+   back to fitting the one frame. */
+function fitAll() {
+  if (ed.frameList().length < 2) return fitToScreen();
+  if (!fitToScreen()) return false;
+  const b = ed.frameBounds(), cw = stageEl.clientWidth, ch = stageEl.clientHeight, pad = 72;
+  const z = Math.min(2, Math.max(0.05, Math.min((cw - pad) / b.w, (ch - pad) / b.h)));
+  ed.fc.setZoom(z);
+  const vpt = ed.fc.viewportTransform.slice();
+  vpt[4] = (cw - b.w * z) / 2 - b.x * z;
+  vpt[5] = (ch - b.h * z) / 2 - b.y * z + 8;
+  ed.fc.setViewportTransform(vpt);
+  ed.fc.calcOffset(); ed.fc.requestRenderAll(); refreshZoomUI();
   return true;
 }
 // Keeps fc's DOM size in lockstep with the stage's box WITHOUT re-fitting the artboard on every
@@ -2304,25 +2824,64 @@ new ResizeObserver(() => {
   if (!stageEl.clientWidth) return;
   ed.fc.setDimensions({ width: stageEl.clientWidth, height: stageEl.clientHeight });
   ed.fc.calcOffset();
-  ed.fc.requestRenderAll();
+  // Synchronous: setDimensions blanks the canvas and a deferred redraw would show that blank for a
+  // frame — visible as the artboard strobing while a side panel slides open/shut.
+  ed.fc.renderAll();
 }).observe(stageEl);
 function refreshZoomUI() {
   zoomPctBtn.textContent = Math.round((ed.fc.getZoom() || 1) * 100) + '%';
 }
 document.getElementById('zoom-out').onclick = () => setZoomAtCenter(ed.fc.getZoom() * 0.83);
 document.getElementById('zoom-in').onclick = () => setZoomAtCenter(ed.fc.getZoom() * 1.2);
-document.getElementById('zoom-fit').onclick = fitToScreen;
+document.getElementById('zoom-fit').onclick = () => fitAll();
 zoomPctBtn.onclick = fitToScreen;
+
+/* ── voice control: core/voice.js owns the grammar; this shell only supplies zoom/export + a caption ── */
+{
+  const btn = document.getElementById('voice-btn'), cap = document.getElementById('voice-caption');
+  btn.innerHTML = iconSVG('mic', 14);
+  let capTimer;
+  const say = (msg, err) => { cap.hidden = !msg; cap.textContent = msg || ''; cap.classList.toggle('err', !!err); clearTimeout(capTimer); if (msg && !/^Listening/.test(msg)) capTimer = setTimeout(() => { cap.hidden = true; }, Math.max(2500, msg.length * 55)); };
+  const voice = installVoice(ed, {
+    actions: {
+      zoomIn: () => setZoomAtCenter(ed.fc.getZoom() * 1.2), zoomOut: () => setZoomAtCenter(ed.fc.getZoom() * 0.83),
+      fit: fitToScreen, zoomTo: (pct) => setZoomAtCenter(pct / 100), exportPNG: () => png.click(),
+      export: (fmt, scale) => { const prev = exportScale; if (scale) exportScale = scale; try { EXPORTERS[fmt](); } finally { exportScale = prev; } },
+      saveProject: () => EXPORTERS.project(), openProject: () => projectInput.click(),
+      reviewCommit: () => reviewCommitBtn.click(), reviewCancel: () => reviewCancelBtn.click(),
+      newDoc: () => newdocBtn.onclick(), openImage: () => document.getElementById('openfile').click(),
+      addImage: () => new Promise((res, rej) => { voiceImagePick = { res, rej }; document.getElementById('add-image').click(); }),
+      theme: (m) => { if (m === 'light' || m === 'dark') { if (document.documentElement.dataset.mode !== m) themeBtn.onclick(); } else themeBtn.onclick(); },
+      compare: () => openCompare(), search: () => cmdkOpen(),
+      panel: (side, show) => { const hidden = side === 'left' ? leftCollapsed : rightCollapsed; if (hidden === show) (side === 'left' ? collapseLeftBtn : collapseRightBtn).onclick(); },
+    },
+    onStatus: ({ state, text, message }) => {
+      btn.classList.toggle('on', voice.listening);
+      if (state === 'listening') say(message || 'Listening…');
+      else if (state === 'thinking' && message) say(message);
+      else if (state === 'idle') say('');
+      else if (state === 'thinking') say(`“${text}” → thinking…`);
+      else if (state === 'done') say(`“${text}” → ${message}`);
+      else if (state === 'error') say(message, true);
+    },
+  });
+  if (!voice.supported) btn.title = 'Voice control needs Chrome, Edge or Safari';
+  btn.onclick = () => voice.supported ? voice.toggle() : say('Voice control needs Chrome, Edge or Safari', true);
+}
 ed.on('zoom', refreshZoomUI);
-ed.on('resize', () => { fitToScreen(); });
+ed.on('resize', (e) => { if (e && e.all) fitAll(); else fitToScreen(); });
 tryFit(); setTimeout(tryFit, 60); setTimeout(tryFit, 220);
 document.addEventListener('keydown', e => {
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.altKey) return;
+  // Bare +/-/0 and the Photoshop/Figma Cmd|Ctrl +/-/0/1 all zoom; the modified ones must also stop the BROWSER
+  // zooming the whole page (UI included) instead of the canvas.
+  const mod = e.metaKey || e.ctrlKey;
   if (e.key === '+' || e.key === '=') { e.preventDefault(); setZoomAtCenter(ed.fc.getZoom() * 1.2); }
   else if (e.key === '-') { e.preventDefault(); setZoomAtCenter(ed.fc.getZoom() * 0.83); }
-  else if (e.key === '0') { e.preventDefault(); fitToScreen(); }
+  else if (e.key === '0') { e.preventDefault(); fitAll(); }
+  else if (mod && e.key === '1') { e.preventDefault(); setZoomAtCenter(1); }
 });
 
 /* ── sidebar tabs + collapse ──────────────────────────────────────────────────────────────
@@ -2426,6 +2985,7 @@ const showSelResult = r => { selMsg.textContent = r.status === 'ok' ? '' : (r.me
 const detectBtn = document.getElementById('sel-detect'); detectBtn.innerHTML = iconSVG('wand') + '<span>Auto-Detect Subjects</span>';
 document.getElementById('ai-vision-icon').innerHTML = iconSVG('spark', 13);
 const detectResults = document.getElementById('detect-results');
+let detectHoverBox = null;   // drawn by drawOverlays while its row is hovered
 // Results land in the AI Vision tab (switched to automatically), one row per box; the card's own
 // message line reports failures, since the tab's list may not be what's on screen.
 detectBtn.onclick = async () => {
@@ -2441,6 +3001,8 @@ detectBtn.onclick = async () => {
     btn.className = 'act'; btn.style.cssText = 'flex:1;min-width:0';
     btn.innerHTML = iconSVG('objectselect', 13) + `<span>Subject ${i + 1}</span><span class="tag mono" style="margin-left:auto">${Math.round(b.w)}×${Math.round(b.h)}</span>`;
     btn.onclick = () => { ed.selectDetectedBox(b); refreshSelButtons(); };
+    row.onmouseenter = () => { detectHoverBox = b; ed.fc.requestRenderAll(); };
+    row.onmouseleave = () => { detectHoverBox = null; ed.fc.requestRenderAll(); };
     const mk = document.createElement('button');
     mk.className = 'act'; mk.dataset.detectLayer = ''; mk.title = `Make Subject ${i + 1} its own layer`;
     mk.innerHTML = iconSVG('layerstab', 13);
@@ -2462,6 +3024,7 @@ detectBtn.onclick = async () => {
 // Detected subjects → real layers (one box, or all). The list is cleared afterwards: its boxes were
 // measured against the pre-convert composition and no longer describe the new layers.
 async function detectedToLayers(btn, boxes) {
+  detectHoverBox = null;
   const r = await runCardAction(btn, 'Creating layers…', () => ed.detectedBoxesToLayers(boxes, bgMode));
   if (r.status !== 'ok') { cardMsg(r.message || SEL_REASON_MSG[r.reason] || r.reason); return; }
   detectResults.innerHTML = '';
@@ -2472,8 +3035,10 @@ async function detectedToLayers(btn, boxes) {
 
 const expBtn = document.getElementById('sel-expand'); expBtn.innerHTML = iconSVG('expand') + '<span>Expand</span>';
 const conBtn = document.getElementById('sel-contract'); conBtn.innerHTML = iconSVG('contract') + '<span>Contract</span>';
-expBtn.onclick = async () => showSelResult(await ed.expandSelection(6));
-conBtn.onclick = async () => showSelResult(await ed.contractSelection(6));
+const morphIn = document.getElementById('sel-morph-px'), morphVal = document.getElementById('sel-morph-val');
+morphIn.oninput = () => { morphVal.textContent = morphIn.value + 'px'; };
+expBtn.onclick = async () => showSelResult(await ed.expandSelection(+morphIn.value));
+conBtn.onclick = async () => showSelResult(await ed.contractSelection(+morphIn.value));
 const simBtn = document.getElementById('sel-similar'); simBtn.innerHTML = iconSVG('similar') + '<span>Select Similar Colors</span>';
 simBtn.onclick = async () => showSelResult(await ed.selectSimilar());
 
@@ -2505,8 +3070,11 @@ unclipBtn.onclick = () => {
   ed.clearLayerClip(); selMsg.textContent = '';
 };
 
+const featherIn = document.getElementById('sel-feather'), featherVal = document.getElementById('sel-feather-val');
+featherIn.oninput = () => { ed.featherSelection(+featherIn.value); featherVal.textContent = featherIn.value + 'px'; };
 const refreshSelButtons = () => {
   const has = !!ed.selection;
+  featherIn.disabled = !has; featherIn.value = has && ed.selection.feather || 0; featherVal.textContent = featherIn.value + 'px';
   [expBtn, conBtn, simBtn, recolorBtn, clipBtn].forEach(b => b.disabled = !has);
   unclipBtn.disabled = !ed.fc.getActiveObject();
   selMsg.textContent = has ? '' : 'Draw a marquee/lasso selection first — for a text or shape layer’s colour, use Fill in Properties instead.';
@@ -2530,14 +3098,8 @@ document.getElementById('shadow-clear').onclick = () => {
    Everything here acts on the active layer (ed.fc.getActiveObject() via the Editor facade), and
    every control is a no-op (never throws) with nothing selected — same contract the rest of this
    panel already follows. Refreshed on 'selection' and 'change' so numeric fields track drags. */
-const BLEND_MODES = [
-  ['source-over', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'],
-  ['darken', 'Darken'], ['lighten', 'Lighten'], ['color-dodge', 'Dodge'], ['color-burn', 'Burn'],
-  ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'],
-  ['hue', 'Hue'], ['saturation', 'Saturation'], ['color', 'Color'], ['luminosity', 'Luminosity'],
-];
-const blendSel = document.getElementById('blend-mode');
-blendSel.innerHTML = BLEND_MODES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+// Blend picker: live thumbnail per mode, grouped, tick on the current one (core/blendpicker.js; shared with React)
+const blendSel = mountBlendPicker(document.getElementById('blend-mode'), { get: () => null, preview: () => { const a = ed.layers().find(l => l.active); return a ? ed.blendPreview(a.id) : null; }, set: (v) => { const a = ed.layers().find(l => l.active); if (a) ed.setLayer(a.id, { blend: v }); } });
 
 // Four distinct glyphs — the old up/up/down/down chevrons couldn't be told apart without hovering.
 document.getElementById('stack-top').innerHTML = iconSVG('stackfront', 15);
@@ -2588,7 +3150,7 @@ const adjInputs = {}, adjVals = {};
     }
     const row = document.createElement('div');
     row.className = 'adj-row'; row.title = c.label + ' — double-click to reset';
-    row.innerHTML = `<span style="display:flex">${iconSVG(c.icon, 13)}</span><span class="lbl">${c.label}</span>`
+    row.innerHTML = `<span style="display:flex">${iconSVG(c.icon, 13)}</span><span class="lbl">${c.short || c.label}</span>`
       + `<input type="range" aria-label="${c.label}" min="${c.min}" max="${c.max}" step="${c.step}" value="${FX_DEFAULTS[c.key]}"${c.track ? ` data-track="${c.track}"` : ''}><span class="val dim"></span>`;
     const input = row.querySelector('input'), val = row.querySelector('.val');
     input.oninput = () => { applyAdjust({ [c.key]: +input.value }, true); syncAdjustRow(c.key, +input.value); };
@@ -2613,6 +3175,49 @@ adjInvert.onchange = () => applyAdjust({ invert: adjInvert.checked });
 const adjReset = document.getElementById('adj-reset');
 adjReset.innerHTML = iconSVG('reset', 13) + '<span>Reset adjustments</span>';
 adjReset.onclick = () => { applyAdjust({ ...FX_DEFAULTS }); syncAdjustPanel(FX_DEFAULTS); };
+
+
+/* Quick-jump chips (see #prop-jump): one per section the selected layer actually shows. */
+const propJump = document.getElementById('prop-jump');
+const JUMP_TARGETS = [['Transform', 'sec-transform'], ['Shadow', 'sec-shadow'], ['Adjust', 'adjust-section-label'], ['Geometry', 'sec-geometry']];
+function syncPropJump() {
+  const chips = JUMP_TARGETS.filter(([, id]) => { const e = document.getElementById(id); return e && e.offsetParent !== null; });
+  const key = chips.map(c => c[1]).join();
+  if (chips.length < 3) { propJump.hidden = true; propJump.dataset.key = ''; return; }   // nothing is far away on a short panel
+  propJump.hidden = false;
+  if (propJump.dataset.key === key) return;
+  propJump.dataset.key = key;
+  propJump.innerHTML = chips.map(([label, id]) => `<button type="button" data-jump="${id}">${label}</button>`).join('');
+}
+propJump.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-jump]'); if (!b) return;
+  document.getElementById(b.dataset.jump).scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+});
+
+/* Match Color row: only for a photo (not an adjustment layer). Picking a layer applies it at the current amount;
+   "None" clears it; the Amount slider re-applies on release (one undo step, like the other sliders). */
+const matchRow = document.getElementById('match-row'), matchRef = document.getElementById('match-ref'), matchAmt = document.getElementById('match-amount'), matchVal = document.getElementById('match-val'), matchAmtRow = document.getElementById('match-amount-row');
+document.getElementById('match-ico').innerHTML = iconSVG('droplet', 13);
+function syncMatchRow() {
+  const a = ed.fc.getActiveObject(), id = ed.layers().find(l => l.active)?.id;
+  const show = !!a && a.type === 'image' && a.role !== 'adjustment';
+  matchRow.hidden = !show; if (!show) return;
+  const m = (a.fx && a.fx.match) || null, srcs = ed.matchColorSources(id);
+  matchRef.innerHTML = '<option value="">None</option>' + srcs.map(x => `<option value="${x.id}">${x.name.replace(/[<&]/g, '')}</option>`).join('');
+  matchRef.value = m && srcs.some(x => x.id === m.ref) ? m.ref : '';
+  matchRef.disabled = !srcs.length; matchRef.title = srcs.length ? '' : 'Add another photo to match against';
+  const on = !!matchRef.value; matchAmtRow.hidden = !on;
+  const pct = m ? Math.round((m.amount != null ? m.amount : 1) * 100) : 100; matchAmt.value = pct; matchVal.textContent = pct;
+}
+const applyMatchUI = () => {
+  const id = ed.layers().find(l => l.active)?.id; if (!id) return;
+  const r = matchRef.value ? ed.matchColor(id, matchRef.value, { amount: +matchAmt.value / 100 }) : ed.matchColor(id, null);
+  if (r.status === 'error' && typeof toast === 'function') toast('Match color: ' + ({ no_pixels: 'nothing visible to measure', bad_reference: 'pick a different layer' }[r.reason] || r.reason));
+  syncMatchRow();
+};
+matchRef.onchange = applyMatchUI;
+matchAmt.oninput = () => { matchVal.textContent = matchAmt.value; };
+matchAmt.onchange = applyMatchUI;
 
 /* ── Geometry: straighten + keystone sliders and the 4-corner perspective edit mode — same
    controls as @canvasmith/react (rows from core's GEOMETRY_CONTROLS). ── */
@@ -2803,7 +3408,6 @@ curvesBox.addEventListener('dblclick', (e) => {
   if (i > 0 && i < pts.length - 1) { emitCurves(curveRemovePoint(pts, i), true); commitAdjust(); }
 });
 
-blendSel.onchange = () => { const a = ed.layers().find(l => l.active); if (a) ed.setLayer(a.id, { blend: blendSel.value }); };
 const layerOpacity = document.getElementById('layer-opacity');
 // live: a slider drag is one undo step, not one per input event
 layerOpacity.oninput = () => { const a = ed.layers().find(l => l.active); if (a) ed.setLayer(a.id, { opacity: +layerOpacity.value }, { live: true }); };
@@ -2822,15 +3426,72 @@ function fontLabelFor(value) {
   for (const g of FONT_GROUPS) { const f = g.fonts.find(([, v]) => v === value); if (f) return f[0]; }
   return value || 'Choose a font…';
 }
+/* The popover shows either the installed fonts ("My fonts") or one slice of the Google Fonts catalog
+   (All / Sans / Serif / Display / Mono). Typing in the search box jumps to the catalog. Catalog rows
+   preview in their own face via lazily-loaded glyph subsets; clicking one adds + applies it. */
+const FONT_VIEWS = [['installed', 'My fonts'], ['all', 'All'], ['sans-serif', 'Sans'], ['serif', 'Serif'], ['display', 'Display'], ['monospace', 'Mono']];
+let fontView = 'installed';
+const txFontGoogle = document.getElementById('tx-font-google');
+const fontClear = document.getElementById('fp-q-clear');
+document.getElementById('fp-q-ico').innerHTML = iconSVG('search', 14);
+fontClear.innerHTML = iconSVG('close', 11);
+document.getElementById('fp-up-ico').innerHTML = iconSVG('plus', 13);
+const installedFont = (name) => FONT_GROUPS.some(g => g.fonts.some(([l]) => l.toLowerCase() === name.toLowerCase()));
 function renderFontPop() {
-  txFontPop.innerHTML = FONT_GROUPS.map(g => `<div class="font-grp-label">${g.label}</div>` +
-    g.fonts.map(([label, value]) => `<div class="font-item" data-on="${value === txFont.value}" data-value="${value.replace(/"/g, '&quot;')}">
-      <span class="nm" style="font-family:${value}">${label}</span><span class="ag" style="font-family:${value}">Ag</span>
-    </div>`).join('')).join('');
+  const list = document.getElementById('tx-font-list');
+  const q = txFontGoogle.value.trim();
+  fontClear.hidden = !txFontGoogle.value;
+  document.getElementById('tx-font-chips').innerHTML = FONT_VIEWS.map(([v, l]) => `<button type="button" role="tab" data-v="${v}" data-on="${v === fontView}" aria-selected="${v === fontView}">${l}</button>`).join('');
+  if (fontView === 'installed') {
+    list.innerHTML = FONT_GROUPS.map(g => `<div class="font-grp-label">${g.label}</div>` +
+      g.fonts.map(([label, value]) => `<div class="font-item" tabindex="0" data-on="${value === txFont.value}" data-value="${value.replace(/"/g, '&quot;')}">
+        <span class="nm" style="font-family:${value}">${label}</span><span class="ag" style="font-family:${value}">Ag</span>
+      </div>`).join('')).join('');
+    return;
+  }
+  const hits = searchGoogleFonts(q, fontView, 50);
+  list.innerHTML = hits.length ? hits.map(f => `<div class="font-item" tabindex="0" data-gf="${f.name}">
+    <span class="nm" style="font-family:'${f.name}', ${f.category}">${f.name}</span>
+    ${installedFont(f.name) ? '<span class="tag ok">Added</span>' : '<span class="tag add">+ Add</span>'}</div>`).join('')
+    : `<div class="font-empty">No match for “${q.replace(/[<>&"]/g, '')}”.<br>Press Enter to try that exact name on Google Fonts.</div>`;
+  loadFontPreviews(hits.map(f => f.name));
 }
-txFontBtn.onclick = () => { if (txFont.disabled) return; renderFontPop(); txFontPop.hidden = !txFontPop.hidden; };
+txFontBtn.onclick = () => { if (txFont.disabled) return; renderFontPop(); txFontPop.hidden = !txFontPop.hidden; if (!txFontPop.hidden) { txFontPop.scrollIntoView({ block: 'nearest' }); if (fontView !== 'installed') txFontGoogle.focus(); } };
+/* Add a font: a Google Fonts family by name, or a font file from disk. Either lands in the "My fonts"
+   group (core registry), gets applied to the selected text, and text already on the canvas is
+   re-measured so nothing keeps the fallback face's box. */
+async function addFont(load, busyBtn) {
+  busyBtn.disabled = true;
+  try {
+    const css = await load();
+    ed.refreshFonts();
+    txFont.value = css; txFontCurrent.textContent = fontLabelFor(css); txFontCurrent.style.fontFamily = css;
+    renderFontPop();
+    if (txFont.onchange) txFont.onchange();
+    toast('Font added');
+    return true;
+  } catch (err) { toast(err.message || 'Could not add that font'); return false; }
+  finally { busyBtn.disabled = false; }
+}
+const txFontFile = document.getElementById('tx-font-file');
+const txFontUpload = document.getElementById('tx-font-upload');
+const resetFontSearch = () => { txFontGoogle.value = ''; fontView = 'installed'; renderFontPop(); };
+const submitGoogleFont = () => {
+  const q = txFontGoogle.value.trim(); if (!q) return;
+  const top = searchGoogleFonts(q, fontView === 'installed' ? 'all' : fontView, 1)[0];
+  addFont(() => addGoogleFont(top ? top.name : q), txFontUpload).then(ok => { if (ok) { txFontPop.hidden = true; resetFontSearch(); } });
+};
+document.getElementById('tx-font-chips').addEventListener('click', e => { const v = e.target.closest('button')?.dataset.v; if (v) { fontView = v; renderFontPop(); } });
+txFontGoogle.oninput = () => { if (txFontGoogle.value && fontView === 'installed') fontView = 'all'; renderFontPop(); };
+fontClear.onclick = () => { txFontGoogle.value = ''; renderFontPop(); txFontGoogle.focus(); };
+txFontGoogle.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') submitGoogleFont(); };   // typing here must not trigger tool hotkeys
+document.getElementById('tx-font-upload').onclick = () => txFontFile.click();
+txFontFile.onchange = () => { const f = txFontFile.files[0]; txFontFile.value = ''; if (f) addFont(() => addCustomFont(f), txFontUpload); };
+restoreUserFonts().then(() => ed.refreshFonts());
+txFontPop.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('font-item')) { e.preventDefault(); e.target.click(); } });
 txFontPop.addEventListener('click', e => {
   const item = e.target.closest('.font-item'); if (!item) return;
+  if (item.dataset.gf) { addFont(() => addGoogleFont(item.dataset.gf), txFontUpload).then(ok => { if (ok) { txFontPop.hidden = true; resetFontSearch(); } }); return; }
   txFont.value = item.dataset.value;
   txFontCurrent.textContent = fontLabelFor(txFont.value);
   txFontCurrent.style.fontFamily = txFont.value;
@@ -2838,12 +3499,14 @@ txFontPop.addEventListener('click', e => {
   if (txFont.onchange) txFont.onchange();
 });
 document.addEventListener('click', e => {
-  if (!txFontPop.hidden && !txFontPop.contains(e.target) && e.target !== txFontBtn && !txFontBtn.contains(e.target)) txFontPop.hidden = true;
+  if (!txFontPop.hidden && e.target.isConnected && !txFontPop.contains(e.target) && e.target !== txFontBtn && !txFontBtn.contains(e.target)) txFontPop.hidden = true;
 });
 const txSize = document.getElementById('tx-size'), txWeight = document.getElementById('tx-weight');
 const txItalic = document.getElementById('tx-italic'), txUnderline = document.getElementById('tx-underline'), txStrike = document.getElementById('tx-strike');
 const txAlignLeft = document.getElementById('tx-align-left'), txAlignCenter = document.getElementById('tx-align-center'), txAlignRight = document.getElementById('tx-align-right');
-txAlignLeft.innerHTML = iconSVG('align-left', 14); txAlignCenter.innerHTML = iconSVG('align-h-center', 14); txAlignRight.innerHTML = iconSVG('align-right', 14);
+// text-line icons and their own tooltips — they used the canvas-alignment glyphs and names ("Align left"), so the two rows read as duplicates
+txAlignLeft.innerHTML = iconSVG('text-left', 14); txAlignCenter.innerHTML = iconSVG('text-center', 14); txAlignRight.innerHTML = iconSVG('text-right', 14);
+txAlignLeft.title = 'Align text left'; txAlignCenter.title = 'Align text center'; txAlignRight.title = 'Align text right';
 const txLineHeight = document.getElementById('tx-lineheight'), txSpacing = document.getElementById('tx-spacing');
 txFont.onchange = () => ed.setTextProps({ fontFamily: txFont.value });
 txSize.onchange = () => ed.setTextProps({ fontSize: Math.max(1, +txSize.value) });
@@ -3001,6 +3664,8 @@ function refreshPaintEyes(target) {
   });
 }
 const xfRx = document.getElementById('xf-rx');
+const xfFeather = document.getElementById('xf-feather');
+xfFeather.oninput = () => { ed.setEdgeFeather(null, +xfFeather.value); paintRangeFill(xfFeather); };
 xfRx.oninput = () => { ed.setNumeric({ rx: +xfRx.value }, { live: true }); paintRangeFill(xfRx); };
 
 /* ── Fill: Solid/Gradient toggle + gradient-fill stop editor ─────────────────────────────────
@@ -3019,6 +3684,7 @@ function renderFgStops() {
   fgTypeRadial.dataset.on = String(fgState.type === 'radial');
   fgAngleRow.style.display = fgState.type === 'linear' ? '' : 'none';
   fgAngle.value = fgState.angle;
+  document.getElementById('fg-angle-val').textContent = Math.round(fgState.angle) + '°';
   fgStopsEl.innerHTML = '';
   fgState.stops.forEach((stop, i) => {
     const row = document.createElement('div');
@@ -3035,7 +3701,7 @@ fillModeSolid.onclick = () => { fillSolidEl.style.display = ''; fillGradientEl.s
 fillModeGradient.onclick = () => { fillSolidEl.style.display = 'none'; fillGradientEl.style.display = ''; renderFgStops(); applyFgState(); };
 fgTypeLinear.onclick = () => { fgState.type = 'linear'; renderFgStops(); applyFgState(); };
 fgTypeRadial.onclick = () => { fgState.type = 'radial'; renderFgStops(); applyFgState(); };
-fgAngle.oninput = () => { fgState.angle = +fgAngle.value; paintRangeFill(fgAngle); applyFgState(); };
+fgAngle.oninput = () => { fgState.angle = +fgAngle.value; document.getElementById('fg-angle-val').textContent = fgState.angle + '°'; paintRangeFill(fgAngle); applyFgState(); };
 fgStopsEl.addEventListener('input', e => {
   const i = +e.target.dataset.i; if (Number.isNaN(i)) return;
   if (e.target.classList.contains('fg-stop-color')) fgState.stops[i] = { ...fgState.stops[i], color: e.target.value };
@@ -3055,8 +3721,9 @@ document.getElementById('fg-add-stop').onclick = () => {
 xfAngle.oninput = () => ed.setNumeric({ angle: +xfAngle.value });
 xfX.onchange = () => ed.setNumeric({ x: +xfX.value });
 xfY.onchange = () => ed.setNumeric({ y: +xfY.value });
-xfW.onchange = () => ed.setNumeric({ w: +xfW.value });
-xfH.onchange = () => ed.setNumeric({ h: +xfH.value });
+const xfKeepRatio = document.getElementById('xf-keep-ratio');
+xfW.onchange = () => ed.setNumeric({ w: +xfW.value }, { keepRatio: xfKeepRatio.checked });
+xfH.onchange = () => ed.setNumeric({ h: +xfH.value }, { keepRatio: xfKeepRatio.checked });
 xfSkewX.onchange = () => ed.setNumeric({ skewX: +xfSkewX.value });
 xfSkewY.onchange = () => ed.setNumeric({ skewY: +xfSkewY.value });
 flipHBtn.onclick = () => ed.flipLayer('x');
@@ -3120,6 +3787,35 @@ function refreshCanvasSection() {
 ed.on('change', refreshCanvasSection); ed.on('resize', refreshCanvasSection);
 refreshCanvasSection();
 
+/* Frames: several artboards on one page. core owns them (Editor#addFrame/activateFrame/...); this
+   is only the list — click a row to work in that frame, double-click to rename, × to delete it
+   (and the layers in it). */
+const frameNameEl = document.getElementById('frame-name'), frameAddBtn = document.getElementById('frame-add'), frameDelBtn = document.getElementById('frame-del');
+document.getElementById('frame-field-ico').innerHTML = iconSVG('frame', 14);
+document.getElementById('cv-w-ico').innerHTML = iconSVG('width', 17);
+document.getElementById('cv-h-ico').innerHTML = iconSVG('height', 17);
+frameAddBtn.innerHTML = iconSVG('plus', 15);
+frameDelBtn.innerHTML = iconSVG('trash', 14);
+function renderFrames() {
+  const list = ed.frameList(), cur = list.find(f => f.active);
+  if (document.activeElement !== frameNameEl) frameNameEl.value = cur ? cur.name : '';
+  document.getElementById('frame-count').textContent = list.length > 1 ? `${list.findIndex(f => f.active) + 1} of ${list.length}` : '';
+  frameAddBtn.disabled = list.length >= 12;
+  frameAddBtn.title = list.length >= 12 ? 'A page holds up to 12 frames' : 'Add a frame to this page';
+  frameDelBtn.disabled = list.length < 2;
+}
+frameNameEl.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') frameNameEl.blur(); else if (e.key === 'Escape') { const c = ed.frameList().find(f => f.active); frameNameEl.value = c ? c.name : ''; frameNameEl.blur(); } };
+frameNameEl.onblur = () => { const c = ed.frameList().find(f => f.active); if (c && !ed.renameFrame(c.id, frameNameEl.value)) renderFrames(); };
+frameAddBtn.onclick = () => ed.addFrame();
+frameDelBtn.onclick = () => {
+  const c = ed.frameList().find(f => f.active); if (!c) return;
+  const n = ed.layers().filter(l => l.frameId === c.id).length;
+  if (n && !confirm('Delete \u201c' + c.name + '\u201d and its ' + n + ' layer' + (n === 1 ? '' : 's') + '?')) return;
+  ed.removeFrame(c.id);
+};
+ed.on('frames', () => { renderFrames(); renderLayers(false); });
+renderFrames();
+
 /* Type/Status strip pinned under the Properties tab — only with a selection, only on that tab. */
 function refreshPropsFooter() {
   const o = ed.fc.getActiveObject(), rp = document.getElementById('right-panel');
@@ -3131,12 +3827,40 @@ function refreshPropsFooter() {
   const st = document.getElementById('props-footer-status');
   st.textContent = o.locked ? 'Locked' : 'Unlocked'; st.dataset.locked = String(!!o.locked);
 }
+/* Combine shapes: Union / Subtract / Intersect / Exclude / Flatten. Only with two or more layers selected;
+   a selection with an image (or text, a line, a group) in it disables every operation. The four true
+   boolean ops also stay off until core has a polygon engine (setClipEngine). */
+const COMBINE_ITEMS = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude'], ['flatten', 'Flatten']];
+const combineSection = document.getElementById('combine-section'), combineList = document.getElementById('combine-list'), combineHint = document.getElementById('combine-hint');
+function renderCombine() {
+  const info = ed.combineInfo();
+  combineSection.hidden = info.count < 2;
+  if (info.count < 2) return;
+  const key = JSON.stringify([info.ok, info.engine]);
+  if (combineList.dataset.key !== key) {
+    combineList.dataset.key = key;
+    combineList.innerHTML = COMBINE_ITEMS.map(([op, label]) => {
+      const on = info.ops[op];
+      const why = on ? '' : !info.ok ? info.reason : 'The polygon engine isn\u2019t available';
+      return `<button class="cb-item" role="menuitem" data-op="${op}" ${on ? '' : 'disabled'} title="${on ? label + ' the selected shapes' : why.replace(/"/g, '&quot;')}">${iconSVG(op, 16)}<span>${label}</span></button>`;
+    }).join('');
+  }
+  combineHint.textContent = info.ok ? (info.engine ? '' : 'The polygon engine isn\u2019t available, so only Flatten works.') : info.reason;
+}
+combineList.addEventListener('click', e => {
+  const b = e.target.closest('.cb-item'); if (!b || b.disabled) return;
+  try { ed.combineShapes(b.dataset.op); } catch (err) { toast(err.message); }
+});
 function refreshPropsPanel() {
   refreshPropsFooter();
   const o = ed.fc.getActiveObject();
   document.getElementById('right-panel').dataset.empty = String(!o);
+  // Page settings only with nothing selected (Figma): a selected layer's own properties start at the top.
+  document.getElementById('canvas-section').hidden = !!o;
+  { const iso = ed.isolationParent(), bar = document.getElementById('iso-bar');
+    bar.hidden = !iso; bar.style.display = iso ? 'flex' : 'none'; if (iso) document.getElementById('iso-name').textContent = iso.name; }
   document.getElementById('props-title').textContent = o
-    ? (o.type === 'activeSelection' ? (o._objects ? o._objects.length + ' layers' : 'Selection') : (ed.layers().find(l => l.active)?.name || o.type || 'Layer'))
+    ? (o.type === 'activeSelection' ? (o._objects ? o._objects.length + ' layers' : 'Selection') : (ed.layers().find(l => l.active)?.name || layerLabel(o)))
     : 'Properties';
   const isImage = !!o && o.type === 'image';
   const isAdjustment = !!o && o.role === 'adjustment';
@@ -3146,6 +3870,8 @@ function refreshPropsPanel() {
   document.getElementById('geom-section').style.display = (isImage && !isAdjustment) ? '' : 'none';
   if (isImage && !isAdjustment) syncGeomPanel(ed.getImageGeometry());
   if (isAdjustment || isImage) { syncAdjustPanel(currentAdjust()); refreshCurveHistogram(); if (!curveDrag) renderCurves(); renderHsl(); }
+  syncMatchRow();
+  syncPropJump();
   const tx = ed.getTextProps();
   document.getElementById('typography-section').style.display = tx ? '' : 'none';
   if (tx) {
@@ -3166,7 +3892,7 @@ function refreshPropsPanel() {
   // (coloured via stroke, not fill) and anything with no fill to show at all (flat colour OR a
   // Fabric gradient object both count as "has a fill").
   const fillTarget = o && o.type === 'activeSelection' ? o.getObjects()[0] : o;
-  const solidFill = fillTarget ? solidColor(fillTarget.fill) : null;
+  const solidFill = fillTarget ? solidColor(ed.textSelectionFill() || fillTarget.fill) : null;
   const shapeGrad = ed.getShapeGradient();
   const hasFill = !!fillTarget && !isImage && fillTarget.type !== 'line' && fillTarget.role !== 'paint' && (solidFill || !!shapeGrad);
   document.getElementById('fill-section-label').style.display = hasFill ? '' : 'none';
@@ -3191,20 +3917,25 @@ function refreshPropsPanel() {
     xfStroke.value = solidStroke ? solidStroke.color : '#000000'; strokeAlpha = solidStroke ? solidStroke.alpha : 1;
     refreshBorderStyle(fillTarget);
   }
-  // Corner radius only makes sense on a rectangle.
-  const isRect = !!fillTarget && fillTarget.type === 'rect';
-  document.getElementById('radius-section').style.display = isRect ? '' : 'none';
-  if (isRect) {
+  // Corner radius: a rectangle, or an image (rounded photo cards) that isn't already clipped some other way.
+  const rounded = fillTarget && fillTarget.type === 'rect' ? fillTarget
+    : o && o.type === 'image' && !(o.clipPath && o.clipPath.role !== 'corner') ? o : null;
+  const featherable = !!(o && o.type !== 'activeSelection' && (o.type === 'image' || o.role === 'paint'));
+  document.getElementById('feather-section').style.display = featherable ? '' : 'none';
+  if (featherable) { xfFeather.value = o.edgeFeather || 0; paintRangeFill(xfFeather); }
+  document.getElementById('radius-section').style.display = rounded ? '' : 'none';
+  if (rounded) {
     // the true on-screen radius (not the raw local rx, which is divided by scale) — see Editor#cornerRadiusOf
-    xfRx.max = Math.max(1, Math.round(Math.min(fillTarget.getScaledWidth(), fillTarget.getScaledHeight()) / 2));
-    xfRx.value = Math.round(ed.cornerRadiusOf(fillTarget));
+    xfRx.max = Math.max(1, Math.round(Math.min(rounded.getScaledWidth(), rounded.getScaledHeight()) / 2));
+    xfRx.value = Math.round(ed.cornerRadiusOf(rounded));
   }
-  blendSel.value = o ? (o.globalCompositeOperation || 'source-over') : 'source-over';
+  blendSel.sync(o ? (o.globalCompositeOperation || 'source-over') : 'source-over');
   layerOpacity.value = o && o.opacity != null ? o.opacity : 1;
-  blendSel.disabled = layerOpacity.disabled = !o;
+  blendSel.setDisabled(!o); layerOpacity.disabled = !o;
   xfAngle.value = o ? Math.round(o.angle || 0) : 0;
-  xfX.value = o ? Math.round(o.left || 0) : '';
-  xfY.value = o ? Math.round(o.top || 0) : '';
+  const pos = o && ed.panelPosition(o);
+  xfX.value = o ? Math.round(pos.x) : '';
+  xfY.value = o ? Math.round(pos.y) : '';
   xfW.value = o ? Math.round(o.getScaledWidth ? o.getScaledWidth() : (o.width || 0)) : '';
   xfH.value = o ? Math.round(o.getScaledHeight ? o.getScaledHeight() : (o.height || 0)) : '';
   xfSkewX.value = o ? Math.round(o.skewX || 0) : 0;
@@ -3221,6 +3952,7 @@ function refreshPropsPanel() {
   groupBtn.style.display = canGroup ? '' : 'none';
   ungroupBtn.style.display = canUngroup ? '' : 'none';
   document.getElementById('group-row').style.display = canGroup || canUngroup ? 'flex' : 'none';
+  renderCombine();
   if (document.activeElement !== xfFillHex) xfFillHex.value = xfFill.value.toUpperCase();
   if (document.activeElement !== xfStrokeHex) xfStrokeHex.value = xfStroke.value.toUpperCase();
   if (document.activeElement !== xfFillAlpha) xfFillAlpha.value = Math.round(fillAlpha * 100);
@@ -3232,6 +3964,7 @@ ed.on('change', refreshPropsPanel);
 ed.fc.on('selection:created', refreshPropsPanel);
 ed.fc.on('selection:updated', refreshPropsPanel);
 ed.fc.on('selection:cleared', refreshPropsPanel);
+ed.fc.on('text:selection:changed', refreshPropsPanel);
 ed.fc.on('object:moving', refreshPropsPanel);
 ed.fc.on('object:scaling', refreshPropsPanel);
 ed.fc.on('object:rotating', refreshPropsPanel);
@@ -3269,9 +4002,11 @@ function layerSubtitle(l) {
 let _dragLayerId = null, _dragOverId = null, _renamingId = null, _lastLayerClick = null;
 // Group rows the user folded shut — per-session panel state, not document state (default: open).
 const _collapsedGroups = new Set();
+const _collapsedFrames = new Set();   // frame folders the user folded shut in the Layers panel
 // layers() nests a group's members under `children`; row lookups by id need them flattened.
 const flatten = (ls) => ls.flatMap(l => [l, ...(l.children ? flatten(l.children) : [])]);
 const flatLayers = () => flatten(ed.layers());
+document.getElementById('iso-done').onclick = () => ed.exitIsolation();
 /* Row tile: real pixels for raster layers (image/paint/background image), a kind glyph otherwise —
    text shows "Aa", shapes/badges a glyph tinted with their own fill so the list reads at a glance. */
 const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
@@ -3302,7 +4037,7 @@ const renderLayers = (thumbs = true) => {
     // unless the group is folded, when that row isn't shown.
     const on = (l.selected || l.active || l.childActive) && !(l.childActive && open);
     return `<div class="layer" role="listitem" data-id="${l.id}" data-on="${on}" data-visible="${l.visible}"${l.parentId ? ` data-child="true"` : ''}${l.isGroup ? ` data-group="true" aria-expanded="${open}"` : ''}
-        draggable="${l.role !== 'bg'}" data-dragover="${_dragOverId === l.id}" data-dragging="${_dragLayerId === l.id}">
+        draggable="${l.role !== 'bg'}" data-dragover="${_dragOverId === l.id}" data-drop="${_dragOverId === l.id ? (_dropBelow ? 'below' : 'above') : ''}" data-dragging="${_dragLayerId === l.id}">
        <div class="lr-toggles">
          <button class="lr-ico" data-act="vis" title="${l.visible ? 'Hide' : 'Show'}" aria-pressed="${!l.visible}" data-active="${!l.visible}">${iconSVG(l.visible ? 'eyeOpen' : 'eyeOff', 14)}</button>
          <button class="lr-ico" data-act="lock" title="${l.locked ? 'Unlock' : 'Lock'}" aria-pressed="${l.locked}" data-active="${l.locked}">${iconSVG(l.locked ? 'lock' : 'unlock', 13)}</button>
@@ -3311,18 +4046,32 @@ const renderLayers = (thumbs = true) => {
        ${layerTile(l)}
        <div class="layer-meta">${nameHtml}<span class="sub">${esc(l.subtitle || layerSubtitle(l))}</span></div>
        <div class="layer-actions">
-         <button data-act="up" title="Move up">${iconSVG('up', 12)}</button>
+         <!-- no row "Move up" button: on hover it sat over the right of the name, so a click meant to
+              select the row reordered it; drag, Stacking and ⌘] / ⌘[ reorder instead -->
          ${l.maskable ? (l.hasMask
            ? `<button data-act="editmask" title="${l.editingMask ? 'Stop editing mask' : 'Edit mask'}" data-active="${l.editingMask || !l.maskEnabled}">${iconSVG('mask', 12)}</button>
-              <button data-act="delmask" title="Delete mask">${iconSVG('close', 12)}</button>`
+              <button data-act="delmask" title="Delete mask">${iconSVG('maskoff', 12)}</button>`
            : `<button data-act="addmask" title="Add layer mask">${iconSVG('mask', 12)}</button>`) : ''}
-         ${l.role !== 'bg' ? `<button data-act="del" title="Delete">${iconSVG('close', 12)}</button>` : ''}
+         ${l.role !== 'bg' ? `<button data-act="del" title="Delete layer">${iconSVG('trash', 12)}</button>` : ''}
        </div></div>`;
   };
   // Recursive: a group nested inside a group renders its own indented block of members.
   const tree = (l) => row(l) + (l.isGroup && !_collapsedGroups.has(l.id)
     ? `<div class="layer-children" role="group">${l.children.map(tree).join('')}</div>` : '');
-  panel.innerHTML = all.map(tree).join('');
+  /* Several frames: the list is grouped Figma-style — each frame is a folder row with its own
+     layers nested inside. One frame: the flat list as before. */
+  const frames = ed.frameList();
+  if (frames.length > 1) {
+    const byFrame = new Map(frames.map(f => [f.id, []]));
+    all.forEach(l => (byFrame.get(l.frameId) || byFrame.get(frames[0].id)).push(l));
+    panel.innerHTML = frames.map(f => {
+      const ls = byFrame.get(f.id), open = !_collapsedFrames.has(f.id);
+      return `<div class="frame-head" role="listitem" data-frame="${f.id}" data-on="${f.active}" aria-expanded="${open}" title="${esc(f.name)} \u2014 click to work in this frame">
+        <button class="fh-fold" data-fact="fold" data-open="${open}" aria-label="${open ? 'Collapse frame' : 'Expand frame'}">${iconSVG('chevronD', 13)}</button>
+        <span class="fh-ico">${iconSVG('frame', 13)}</span><span class="fh-name">${esc(f.name)}</span><span class="fh-count">${ls.length}</span></div>`
+        + (open ? `<div class="frame-layers" role="group">${ls.length ? ls.map(tree).join('') : '<div class="frame-empty">No layers</div>'}</div>` : '');
+    }).join('');
+  } else panel.innerHTML = all.map(tree).join('');
   if (_renamingId) {
     const input = panel.querySelector('.layer-rename');
     if (input) { input.focus(); input.select(); }
@@ -3334,6 +4083,13 @@ function commitRename(id, value) {
   if (v) ed.setLayer(id, { name: v }); else renderLayers();
 }
 panel.addEventListener('click', e => {
+  const head = e.target.closest('.frame-head');
+  if (head) {
+    const fid = head.dataset.frame;
+    if (e.target.closest('[data-fact=fold]')) { if (_collapsedFrames.has(fid)) _collapsedFrames.delete(fid); else _collapsedFrames.add(fid); renderLayers(false); }
+    else ed.activateFrame(fid);
+    return;
+  }
   const row = e.target.closest('.layer'); if (!row) return;
   const id = row.dataset.id, act = e.target.closest('[data-act]')?.dataset.act;
   const l = flatLayers().find(l => l.id === id);
@@ -3349,9 +4105,9 @@ panel.addEventListener('click', e => {
     else { ed.activate(id); ed.enterMaskEdit(id); }
   }
   else if (!act && !e.target.closest('.layer-rename') && (e.shiftKey || e.metaKey || e.ctrlKey)) {
-    // Shift/Cmd/Ctrl-click: add to / remove from a multi-selection (then ⌘G groups it).
+    // Shift-click picks the range from the selected layer; Cmd/Ctrl-click adds/removes one (then ⌘G groups it).
     _lastLayerClick = null;
-    ed.toggleLayerSelection(id);
+    if (e.shiftKey && !e.metaKey && !e.ctrlKey) ed.selectLayerRange(id); else ed.toggleLayerSelection(id);
   }
   else if (!act && !e.target.closest('.layer-rename')) {
     // Manual double-click detection keyed on the layer id rather than the DOM node: activate()
@@ -3374,8 +4130,11 @@ panel.addEventListener('keydown', e => {
 panel.addEventListener('blur', e => {
   if (e.target.classList.contains('layer-rename')) commitRename(e.target.dataset.id, e.target.value);
 }, true);
-/* Drag-to-reorder: dropping row A onto row B places A directly above B in the panel (i.e. just
-   in front of it in the stack) — background layer is neither draggable nor a drop target. */
+/* Drag-to-reorder: dropping row A on the top half of row B places A directly above B in the panel
+   (just in front of it in the stack), on the bottom half directly below it — it only ever went
+   above, so nothing could be dragged into the bottom slot. The background is never a target. */
+let _dropBelow = false;
+const _isLowerHalf = (row, e) => { const r = row.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
 panel.addEventListener('dragstart', e => {
   const row = e.target.closest('.layer[draggable=true]'); if (!row) return;
   _dragLayerId = row.dataset.id;
@@ -3389,7 +4148,16 @@ panel.addEventListener('dragstart', e => {
 panel.addEventListener('dragover', e => {
   const row = e.target.closest('.layer'); if (!row || row.dataset.id === _dragLayerId || !_dragLayerId) return;
   e.preventDefault();
-  if (_dragOverId !== row.dataset.id) { _dragOverId = row.dataset.id; renderLayers(); }
+  const below = _isLowerHalf(row, e);
+  if (_dragOverId !== row.dataset.id || _dropBelow !== below) {
+    _dragOverId = row.dataset.id; _dropBelow = below;
+    // Mark rows in place: re-rendering the list mid-drag replaces the dragged row's node, and
+    // Chrome then cancels the drag (the drop never arrives).
+    panel.querySelectorAll('.layer').forEach(r => {
+      const on = r.dataset.id === _dragOverId;
+      r.dataset.dragover = String(on); r.dataset.drop = on ? (below ? 'below' : 'above') : '';
+    });
+  }
 });
 panel.addEventListener('dragleave', e => {
   if (!panel.contains(e.relatedTarget)) { _dragOverId = null; renderLayers(); }
@@ -3398,7 +4166,7 @@ panel.addEventListener('drop', e => {
   const row = e.target.closest('.layer'); if (!row || !_dragLayerId) return;
   e.preventDefault();
   const targetId = row.dataset.id;
-  if (targetId !== _dragLayerId) ed.reorderLayerTo(_dragLayerId, targetId, { after: false });
+  if (targetId !== _dragLayerId) ed.reorderLayerTo(_dragLayerId, targetId, { after: _isLowerHalf(row, e) });
   _dragLayerId = null; _dragOverId = null;
 });
 panel.addEventListener('dragend', () => { _dragLayerId = null; _dragOverId = null; renderLayers(); });
@@ -3477,7 +4245,10 @@ ed.fc.on('selection:created', refreshDock); ed.fc.on('selection:updated', refres
 // three disabled while any runs — same "one AI call at a time" rule as the AI tab's runAi.
 const cardBtns = () => [detectBtn, removeBgBtn, removeBgLocalBtn, autoShadowBtn, ...detectResults.querySelectorAll('[data-detect-layer]')];
 const cardMsgEl = document.getElementById('ai-card-msg');
-function cardMsg(t) { cardMsgEl.textContent = t || ''; cardMsgEl.hidden = !t; }
+/* The "Background removed" note is about one layer's mask: once that mask is gone (undone, deleted,
+   the layer removed) the note goes too, rather than describing a cut-out that no longer exists. */
+let cutoutNoteLayer = null;
+function cardMsg(t) { cardMsgEl.textContent = t || ''; cardMsgEl.hidden = !t; cutoutNoteLayer = null; }
 async function runCardAction(btn, label, fn) {
   const original = btn.innerHTML;
   cardBtns().forEach(b => { b.disabled = true; });
@@ -3497,8 +4268,21 @@ const removeBgMsg = (r) => r.status !== 'ok' ? (r.message || r.reason)
     ? 'Background removed (AI cutout) — it\'s a layer mask: refine it with the brush, or undo.'
     : 'Background removed offline — it\'s a layer mask. Edit the mask to touch it up with Keep / Remove, or undo.'
       + (r.aiFallback ? (r.aiFallback === 'weak_cutout' ? ' The AI result didn\'t separate a subject, so the offline cutout was used.' : ' AI was unavailable, so the offline cutout was used.') : '');
-removeBgBtn.onclick = async () => cardMsg(removeBgMsg(await runCardAction(removeBgBtn, 'Cutting out…', () => ed.removeBackground())));
-removeBgLocalBtn.onclick = async () => cardMsg(removeBgMsg(await runCardAction(removeBgLocalBtn, 'Cutting out…', () => ed.removeBackground({ method: 'local' }))));
+async function runRemoveBg(btn, opts) {
+  const id = ed.fc.getActiveObject()?.id;
+  const r = await runCardAction(btn, 'Cutting out…', () => ed.removeBackground(opts));
+  cardMsg(removeBgMsg(r));
+  cutoutNoteLayer = r.status === 'ok' ? id : null;   // after cardMsg(), which clears it
+}
+ed.on('change', () => {
+  if (cutoutNoteLayer && !ed.layers().find(l => l.id === cutoutNoteLayer)?.hasMask) { cutoutNoteLayer = null; cardMsg(''); }
+});
+// ...and once another layer is picked, so it never reads as being about the photo now selected.
+['selection:created', 'selection:updated'].forEach(ev => ed.fc.on(ev, () => {
+  if (cutoutNoteLayer && ed.fc.getActiveObject()?.id !== cutoutNoteLayer) { cutoutNoteLayer = null; cardMsg(''); }
+}));
+removeBgBtn.onclick = () => runRemoveBg(removeBgBtn);
+removeBgLocalBtn.onclick = () => runRemoveBg(removeBgLocalBtn, { method: 'local' });
 /* Keep / Remove touch-up brushes (mask-edit banner) — only for a layer cut out offline. */
 const maskRefine = document.getElementById('mask-refine');
 const refreshMaskRefine = () => {
@@ -3542,11 +4326,11 @@ document.getElementById('maskedit-done').onclick = () => ed.exitMaskEdit();
 /* ── add element: quick-insert chips, centered on the artboard (ditto's own addElement) ────── */
 document.getElementById('add-text').innerHTML = iconSVG('type', 12) + '<span>Text</span>';
 document.getElementById('add-box').innerHTML = iconSVG('rect', 12) + '<span>Box</span>';
-document.getElementById('add-circle').innerHTML = iconSVG('hoverselect', 12) + '<span>Circle</span>';
+document.getElementById('add-circle').innerHTML = iconSVG('ellipse', 12) + '<span>Circle</span>';
 document.getElementById('add-image').innerHTML = iconSVG('image', 12) + '<span>Image</span>';
 document.getElementById('add-paint').innerHTML = iconSVG('layerstab', 12) + '<span>Paint Layer</span>';
 document.getElementById('add-adjustment').innerHTML = iconSVG('contrast', 16);
-const centerPt = () => ({ x: ed.W / 2, y: ed.H / 2 });
+const centerPt = () => ed.nextSpot();   // cascades past what's already centred
 document.getElementById('add-text').onclick = () => {
   const t = makeText(ed.fabric, centerPt(), { fontSize: 48 });
   ed.fc.add(t); ed.fc.setActiveObject(t); ed.commit('text'); ed.setTool('select');
@@ -3559,7 +4343,7 @@ document.getElementById('add-circle').onclick = () => {
   const o = makeShape(ed.fabric, 'ellipse', centerPt(), ed.toolOpts);
   if (o) { ed.fc.add(o); ed.fc.setActiveObject(o); ed.commit('shape'); ed.setTool('select'); }
 };
-document.getElementById('add-image').onclick = () => { file.dataset.mode = 'add'; file.click(); };
+document.getElementById('add-image').onclick = () => { file.dataset.mode = 'add'; file.addEventListener('cancel', () => { voiceImagePick && voiceImagePick.rej(new Error('No image chosen')); voiceImagePick = null; }, { once: true }); file.click(); };
 document.getElementById('add-paint').onclick = () => ed.setTool('brush');
 document.getElementById('add-adjustment').onclick = () => { ed.addAdjustmentLayer(); };
 
@@ -3568,7 +4352,7 @@ document.getElementById('add-adjustment').onclick = () => { ed.addAdjustmentLaye
    just supply the starting copy/colour a user can immediately edit afterward, same "insert a
    sensible default, let them customize it" convention as add-text's placeholder string. */
 document.getElementById('add-cta').innerHTML = iconSVG('spark', 12) + '<span>CTA</span>';
-document.getElementById('add-badge').innerHTML = iconSVG('hoverselect', 12) + '<span>Badge</span>';
+document.getElementById('add-badge').innerHTML = iconSVG('star', 12) + '<span>Badge</span>';
 document.getElementById('add-price').innerHTML = iconSVG('tag', 12) + '<span>Price</span>';
 document.getElementById('add-brand').innerHTML = iconSVG('box', 12) + '<span>Brand</span>';
 document.getElementById('add-cta').onclick = () => { ed.addCTA(null, { text: 'Shop now' }); ed.setTool('select'); };
@@ -3651,17 +4435,56 @@ function renderStickerCats() {
 }
 function renderStickerGrid() {
   const group = STICKER_GROUPS[stickerCat];
-  stickerGridEl.innerHTML = group.keys.map(k => `<button class="sticker-thumb" data-key="${k}" title="${k}">${stickerPreviewSVG(k)}</button>`).join('');
+  stickerGridEl.innerHTML = group.keys.map(k => `<button class="sticker-thumb" data-key="${k}" title="${stickerLabel(k)}" aria-label="${stickerLabel(k)}">${stickerPreviewSVG(k)}</button>`).join('');
 }
 stickerCatsEl.addEventListener('click', e => {
   const i = +(e.target.closest('button')?.dataset.i ?? -1); if (i < 0) return;
   stickerCat = i; renderStickerCats(); renderStickerGrid();
+
 });
 stickerGridEl.addEventListener('click', e => {
   const key = e.target.closest('.sticker-thumb')?.dataset.key; if (!key) return;
   ed.addSticker(key);
 });
 renderStickerCats(); renderStickerGrid();
+
+/* Icon library (core/icons.js → Iconify): search → grid of mask-drawn thumbnails → click adds a vector layer. */
+const iconQ = document.getElementById('icon-q'), iconGrid = document.getElementById('icon-grid'), iconStatus = document.getElementById('icon-status');
+document.getElementById('icon-sugg').innerHTML = ICON_SUGGESTIONS.map(w => `<button class="chip" data-q="${w}">${w}</button>`).join('');
+let iconSeq = 0, iconTimer = 0;
+document.getElementById('icon-q-ico').innerHTML = iconSVG('search', 15);
+const iconClear = document.getElementById('icon-q-clear'); iconClear.innerHTML = iconSVG('close', 12);
+const stkSeg = document.getElementById('stk-seg');
+function showStickerView(v) {
+  stkSeg.querySelectorAll('.act').forEach(b => { b.dataset.on = String(b.dataset.v === v); b.setAttribute('aria-selected', b.dataset.v === v); });
+  document.getElementById('stk-shapes').hidden = v !== 'shapes'; document.getElementById('stk-icons').hidden = v !== 'icons';
+  if (v === 'icons') { loadStarterIcons(); iconQ.focus({ preventScroll: true }); }
+}
+stkSeg.addEventListener('click', e => { const v = e.target.closest('.act')?.dataset.v; if (v) showStickerView(v); });
+const skeleton = () => { iconGrid.innerHTML = Array(20).fill('<div class="skel"></div>').join(''); };
+async function runIconSearch(q) {
+  const seq = ++iconSeq; q = q.trim() || 'star';   // empty box → starter set, never a blank grid
+  iconClear.hidden = !iconQ.value;
+  iconStatus.textContent = 'Searching…'; skeleton();
+  try {
+    const ids = await searchIcons(q);
+    if (seq !== iconSeq) return;
+    iconStatus.textContent = ids.length ? ids.length + ' icons' : 'No icons found for “' + q.replace(/[<>&"]/g, '') + '” — try another word';
+    iconGrid.innerHTML = ids.map(id => `<button class="sticker-thumb" data-icon="${id}" title="${id.split(':')[1].replace(/-/g, ' ')}" aria-label="${id.split(':')[1].replace(/-/g, ' ')}"><span class="icon-glyph" style="--src:url('${iconUrl(id)}')"></span></button>`).join('');
+  } catch (err) { if (seq === iconSeq) { iconGrid.innerHTML = ''; iconStatus.textContent = 'Could not reach the icon library — check your connection.'; } }
+}
+let iconFirst = true;   // starter set loads the first time the Icons view opens, so the grid is never empty
+function loadStarterIcons() { if (iconFirst && !iconQ.value) { iconFirst = false; runIconSearch('star'); } }
+iconQ.addEventListener('input', () => { iconClear.hidden = !iconQ.value; clearTimeout(iconTimer); iconTimer = setTimeout(() => runIconSearch(iconQ.value), 300); });
+iconQ.addEventListener('keydown', e => e.stopPropagation());   // typing here must not trigger tool hotkeys
+iconClear.onclick = () => { iconQ.value = ''; iconClear.hidden = true; runIconSearch('star'); iconQ.focus(); };
+document.getElementById('icon-sugg').addEventListener('click', e => { const q = e.target.closest('.chip')?.dataset.q; if (q) { iconQ.value = q; runIconSearch(q); } });
+iconGrid.addEventListener('click', async e => {
+  const btn = e.target.closest('.sticker-thumb'); if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try { await ed.addIcon(btn.dataset.icon); } catch (err) { toast(err.message || 'Could not add that icon'); }
+  btn.disabled = false;
+});
 
 /* ── "more below" scroll cues — see #left-scroll-cue's CSS comment for why these exist. Right
    tracks whichever of its panel's tabs is the currently-visible scroll container (only one is
@@ -4243,7 +5066,7 @@ function renderAssets() {
 }
 assetsEl?.querySelector('.asset-grid').addEventListener('click', e => {
   const el = e.target.closest('.asset-thumb'); if (!el) return;
-  const a = assets.find(x => x.id === el.dataset.id); if (a) ed.addImage(a.src);
+  const a = assets.find(x => x.id === el.dataset.id); if (a) ed.addImage(a.src, { name: imageLayerName(a.name) });
 });
 assetsEl?.querySelector('.asset-grid').addEventListener('dragstart', e => {
   const el = e.target.closest('.asset-thumb'); if (!el) return;
@@ -4257,7 +5080,8 @@ stageEl.addEventListener('drop', e => {
   const src = e.dataTransfer.getData('text/x-canvasmith-asset'); if (!src) return;
   e.preventDefault();
   const scenePt = ed.fc.getPointer(e);
-  ed.addImage(src, { name: 'Image' }).then(img => {
+  const asset = assets.find(x => x.src === src);
+  ed.addImage(src, { name: imageLayerName(asset && asset.name) }).then(img => {
     if (!img) return;
     img.set({ left: scenePt.x, top: scenePt.y, originX: 'center', originY: 'center' });
     img.setCoords();
@@ -4266,16 +5090,18 @@ stageEl.addEventListener('drop', e => {
   });
 });
 
+let voiceImagePick = null;
 file.onchange = () => {
   const f = file.files[0]; if (!f) return;
   const openAsDocument = file.dataset.mode === 'open';
+  const vp = voiceImagePick; voiceImagePick = null;   // a voice "add an image" is waiting on this pick, so chained steps run after it lands
   const r = new FileReader();
   r.onload = () => {
-    (openAsDocument ? ed.openImage(r.result) : ed.addImage(r.result)).then(() => trackAsset(r.result, f.name || 'Image'));
+    (openAsDocument ? ed.openImage(r.result) : ed.addImage(r.result, { name: imageLayerName(f.name) })).then(() => { trackAsset(r.result, f.name || 'Image'); vp && vp.res('Image added'); }, e => vp && vp.rej(e));
   };
   r.readAsDataURL(f);
 };
-installDropImport(document.getElementById('stage'), src => { ed.addImage(src); trackAsset(src, 'Dropped image'); });
+installDropImport(document.getElementById('stage'), (src, meta) => { ed.addImage(src, { name: imageLayerName(meta && meta.name) }); trackAsset(src, (meta && meta.name) || 'Dropped image'); });
 /* Visible drop affordance (see #stage[data-dropping] above). dragenter/dragleave fire for every
    child element the cursor crosses, so a plain enter/leave pair flickers — a depth counter is
    the standard fix: only the outermost leave clears the state. Filtered to real FILE drags so
@@ -4304,6 +5130,61 @@ const session = installAutosave(ed, {
   onStatus: s => { autosaveNote(s); },
 });
 
+/* ── document tabs (multi-canvas) ────────────────────────────────────────────────────────
+   core/docs.js parks each inactive document as scene + undo history and swaps it into this one
+   Editor; this is only the strip that drives it. */
+const docs = new DocumentSet(ed, { flush: () => session.saveNow() });
+window.docs = docs;   // poke at the tab set from the console, like window.ed
+const docTabsEl = document.getElementById('doctabs');
+let _renamingTab = null;
+function renderDocTabs() {
+  const list = docs.list();
+  docTabsEl.innerHTML = '';
+  list.forEach(d => {
+    const t = document.createElement('div');
+    t.className = 'doctab'; t.setAttribute('role', 'tab'); t.dataset.on = String(d.active); t.dataset.id = d.id;
+    t.setAttribute('aria-selected', String(d.active)); t.title = d.name + ' — double-click to rename';
+    if (_renamingTab === d.id) {
+      const inp = document.createElement('input'); inp.value = d.name; inp.maxLength = 40;
+      const done = (ok) => { if (_renamingTab !== d.id) return; _renamingTab = null; if (ok) docs.rename(d.id, inp.value); else renderDocTabs(); };
+      inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); };
+      inp.onblur = () => done(true);
+      inp.onclick = e => e.stopPropagation();
+      t.appendChild(inp);
+      setTimeout(() => { inp.focus(); inp.select(); }, 0);
+    } else {
+      const n = document.createElement('span'); n.className = 'dt-name'; n.textContent = d.name; t.appendChild(n);
+    }
+    if (list.length > 1) {
+      const x = document.createElement('button'); x.className = 'dt-x'; x.title = 'Close tab'; x.setAttribute('aria-label', 'Close ' + d.name);
+      x.innerHTML = iconSVG('close', 11);
+      x.onclick = e => { e.stopPropagation(); closeDocTab(d.id); };
+      t.appendChild(x);
+    }
+    t.onclick = () => { if (!d.active) docs.switchTo(d.id); };
+    t.ondblclick = () => { _renamingTab = d.id; renderDocTabs(); };
+    t.onauxclick = e => { if (e.button === 1 && list.length > 1) { e.preventDefault(); closeDocTab(d.id); } };
+    docTabsEl.appendChild(t);
+  });
+  const add = document.createElement('button'); add.id = 'doctab-add'; add.title = 'New canvas tab'; add.setAttribute('aria-label', 'New canvas tab');
+  add.innerHTML = iconSVG('plus', 14);
+  const full = list.length >= MAX_DOCS;
+  add.disabled = full; add.style.opacity = full ? '.35' : ''; add.style.cursor = full ? 'not-allowed' : '';
+  if (full) add.title = 'Up to ' + MAX_DOCS + ' pages \u2014 close one to add another';
+  add.onclick = () => { if (!full) docs.add(); };
+  docTabsEl.appendChild(add);
+}
+/* Closing a tab discards that document outright (it is parked in memory only), so it asks first —
+   unless the tab is empty, where there's nothing to lose. */
+function closeDocTab(id) {
+  const d = docs.docs.find(x => x.id === id); if (!d) return;
+  const empty = id === docs.activeId ? !ed.fc.getObjects().length : !d.parked || !JSON.parse(d.parked.scene).scene.objects.length;
+  if (!empty && !confirm('Close \u201c' + d.name + '\u201d? Its layers will be discarded.')) return;
+  docs.close(id);
+}
+docs.on(() => renderDocTabs());   // Editor 'resize'/'change' (fired by loadDocument) refit the canvas and refresh the panels
+renderDocTabs();
+
 /* One shared line of feedback in the header: the user needs to know when their work is NOT being
    saved (storage blocked, or a document past even IndexedDB's quota), otherwise autosave is a promise the page
    quietly breaks. 'ok-trimmed' still saved the scene — only the tray/compare thumbnails were shed
@@ -4330,7 +5211,7 @@ function autosaveNote(status) {
    load undermines that — "New" is the one-click escape hatch. Restoring an empty document would
    be indistinguishable from a fresh boot, so a session with no objects is skipped (and the
    asset tray/compare baseline with it) to keep the first-run experience clean. */
-restoreSession(ed).then(extras => {
+docs.restore().then(r => r === 'loaded' ? readSession().then(rec => rec && rec.extras) : restoreSession(ed)).then(extras => {
   if (!extras) return;
   if (Array.isArray(extras.assets) && extras.assets.length) { assets = extras.assets; renderAssets(); }
   if (extras.compare) { _compareSnapshot = extras.compare; compareBtn.disabled = false; }
@@ -4427,7 +5308,7 @@ const renderAI = () => {
     aibox.innerHTML = `<div class="aix-keyform">AI tools run on <b style="color:var(--ink)">your own free Gemini key</b> — Google gives
       every account free daily usage, no card. Create one at
       <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">aistudio.google.com/apikey</a>
-      and paste it:<input id="gkey" placeholder="AIza…"></div>`;
+      and paste it:<input id="gkey" placeholder="AIza…" aria-label="Gemini API key"></div>`;
     aibox.querySelector('#gkey').addEventListener('keydown', e => {
       if (e.key === 'Enter') { gem.setKey(e.target.value.trim()); renderAI(); }
     });
@@ -4703,7 +5584,7 @@ function paintRangeFill(el) {
   // A property slider followed by a .val span shows its value (data-scale/data-unit format it).
   const v = el.nextElementSibling;
   if (v && v.classList.contains('val') && el.parentElement && el.parentElement.classList.contains('slider-row'))
-    v.textContent = Math.round(+el.value * (+el.dataset.scale || 1)) + (el.dataset.unit || '');
+    v.textContent = (+el.value * (+el.dataset.scale || 1)).toFixed(+el.dataset.digits || 0) + (el.dataset.unit || '');
 }
 document.querySelectorAll('input[type=range]').forEach(paintRangeFill);
 document.addEventListener('input', e => { if (e.target.matches('input[type=range]')) paintRangeFill(e.target); });
@@ -4723,22 +5604,44 @@ function buildActionItems() {
     { group: 'Select', icon: 'close', label: 'Deselect', run: () => ed.clearSelection() },
     { group: 'View', icon: 'plus', label: 'Zoom in', run: () => setZoomAtCenter(ed.fc.getZoom() * 1.2) },
     { group: 'View', icon: 'minus', label: 'Zoom out', run: () => setZoomAtCenter(ed.fc.getZoom() * 0.83) },
-    { group: 'View', icon: 'maximize', label: 'Fit to screen', run: () => fitToScreen() },
+    { group: 'View', icon: 'maximize', label: 'Fit to screen', run: () => fitAll() },
     { group: 'View', icon: 'moon', label: 'Toggle light/dark theme', run: () => themeBtn.onclick() },
     { group: 'View', icon: 'search', label: 'Compare with original', run: () => openCompare() },
     { group: 'View', icon: 'chevron', label: leftCollapsed ? 'Show side panel' : 'Hide side panel', run: () => collapseLeftBtn.onclick() },
     { group: 'View', icon: 'chevron', label: rightCollapsed ? 'Show Properties panel' : 'Hide Properties panel', run: () => collapseRightBtn.onclick() },
     { group: 'Insert', icon: 'type', label: 'Add text', run: () => document.getElementById('add-text').click() },
     { group: 'Insert', icon: 'rect', label: 'Add box', run: () => document.getElementById('add-box').click() },
-    { group: 'Insert', icon: 'hoverselect', label: 'Add circle', run: () => document.getElementById('add-circle').click() },
+    { group: 'Insert', icon: 'ellipse', label: 'Add circle', run: () => document.getElementById('add-circle').click() },
     { group: 'Insert', icon: 'folder', label: 'Add image…', run: () => document.getElementById('add-image').click() },
     { group: 'Insert', icon: 'spark', label: 'Add CTA button', run: () => document.getElementById('add-cta').click() },
-    { group: 'Insert', icon: 'hoverselect', label: 'Add badge', run: () => document.getElementById('add-badge').click() },
+    { group: 'Insert', icon: 'star', label: 'Add badge', run: () => document.getElementById('add-badge').click() },
     { group: 'Insert', icon: 'tag', label: 'Add price', run: () => document.getElementById('add-price').click() },
     { group: 'Insert', icon: 'box', label: 'Add brand lockup', run: () => document.getElementById('add-brand').click() },
     { group: 'Export', icon: 'svg', label: 'Export PNG', run: () => EXPORTERS.png() },
     { group: 'Export', icon: 'svg', label: 'Export JPG', run: () => EXPORTERS.jpg() },
     { group: 'Export', icon: 'svg', label: 'Export SVG', run: () => EXPORTERS.svg() },
+    // Everyday layer actions the palette was missing — "flip", "lock", "front"... found nothing.
+    { group: 'Arrange', icon: 'flip', label: 'Flip horizontal', run: () => ed.flipLayer('x') },
+    { group: 'Arrange', icon: 'flip', label: 'Flip vertical', run: () => ed.flipLayer('y') },
+    { group: 'Arrange', icon: 'reset', label: 'Rotate 90°', run: () => { const o = ed.fc.getActiveObject(); if (o) ed.setNumeric({ angle: ((o.angle || 0) + 90) % 360 }); } },
+    { group: 'Arrange', icon: 'stackfront', label: 'Bring to front', run: () => ed.arrangeSelection('top') },
+    { group: 'Arrange', icon: 'stackup', label: 'Bring forward', run: () => ed.arrangeSelection('up') },
+    { group: 'Arrange', icon: 'stackdown', label: 'Send backward', run: () => ed.arrangeSelection('down') },
+    { group: 'Arrange', icon: 'stackback', label: 'Send to back', run: () => ed.arrangeSelection('bottom') },
+    { group: 'Arrange', icon: 'align-h-center', label: 'Center horizontally on canvas', run: () => ed.fc.getActiveObject() && ed.alignActiveSelection('center') },
+    { group: 'Arrange', icon: 'align-v-center', label: 'Center vertically on canvas', run: () => ed.fc.getActiveObject() && ed.alignActiveSelection('middle') },
+    { group: 'Layer', icon: 'lock', label: 'Lock / unlock layer', run: () => ed.toggleSelectionLock() },
+    { group: 'Layer', icon: 'hoverselect', label: 'Hide / show layer', run: () => ed.toggleSelectionVisible() },
+    { group: 'Layer', icon: 'contrast', label: 'Add adjustment layer', run: () => ed.addAdjustmentLayer() },
+    { group: 'Layer', icon: 'scissors', label: 'Remove background', run: () => removeBgBtn.click() },
+    { group: 'Select', icon: 'grid', label: 'Select all layers', run: () => ed.selectAllLayers() },
+    { group: 'Edit', icon: 'duplicate', label: 'Copy as PNG', run: () => ed.copyAsPNG() },
+    { group: 'Export', icon: 'folder', label: 'Save project file', run: () => EXPORTERS.project() },
+    { group: 'Edit', icon: 'plus', label: 'New document', run: () => document.getElementById('newdoc').click() },
+    { group: 'Edit', icon: 'plus', label: 'Add frame', run: () => ed.addFrame() },
+    { group: 'Edit', icon: 'plus', label: 'New canvas tab', run: () => { if (docs.count >= MAX_DOCS) toast('Up to ' + MAX_DOCS + ' pages \u2014 close one first'); else docs.add(); } },
+    { group: 'Edit', icon: 'duplicate', label: 'Duplicate canvas tab', run: () => docs.duplicate() },
+    { group: 'Edit', icon: 'close', label: 'Close canvas tab', run: () => closeDocTab(docs.activeId) },
   ];
 }
 let cmdkItems = [], cmdkIdx = 0;
@@ -4752,7 +5655,7 @@ function cmdkClose() { cmdkBackdrop.hidden = true; }
 function cmdkFilter() {
   const q = cmdkInput.value.trim().toLowerCase();
   const all = ALL_TOOL_ITEMS.concat(buildActionItems());
-  cmdkItems = q ? all.filter(it => it.label.toLowerCase().includes(q) || it.group.toLowerCase().includes(q)) : all;
+  cmdkItems = rankCommands(all, q);
   cmdkIdx = 0;
   cmdkRender();
 }
@@ -4802,11 +5705,27 @@ function labelIconButtons(root = document) {
     if (t) el.setAttribute('aria-label', t);
   });
 }
+/* Sliders and bare inputs are the other half of the same gap: "Rotation", "Opacity", "Blur" sit in
+   a text node next to a <input type=range> with no <label for>, so a screen reader announces just
+   "slider". Name them from the closest short text before them in the row (or the placeholder). */
+const VALUE_LIKE = /^[-+\d.,\s]*(%|°|px|em|pt|x)?$/;   // a slider's live readout ("0°", "100%") is not its name
+function labelFormFields(root = document) {
+  root.querySelectorAll('input[type=range]:not([aria-label]):not([aria-labelledby]), input[type=text]:not([aria-label]):not([aria-labelledby]), input[type=number]:not([aria-label]):not([aria-labelledby])').forEach(el => {
+    if (el.id && document.querySelector(`label[for="${el.id}"]`)) return;
+    if (el.closest('label') && (el.closest('label').textContent || '').trim()) return;
+    let name = '';
+    for (let n = el.previousSibling; n && !name; n = n.previousSibling) { const t = (n.textContent || '').trim(); if (t && t.length <= 32 && !VALUE_LIKE.test(t)) name = t; }
+    if (!name && el.parentElement) { const lab = el.parentElement.querySelector(':scope > label, :scope > .lbl, :scope > span'); const t = lab && (lab.textContent || '').trim(); if (t && t.length <= 32 && !VALUE_LIKE.test(t)) name = t; }
+    if (!name) name = el.getAttribute('placeholder') || el.getAttribute('title') || '';
+    if (name) el.setAttribute('aria-label', name.replace(/\s+/g, ' '));
+  });
+}
+labelFormFields();
 labelIconButtons();
 new MutationObserver(muts => {
   for (const m of muts) {
     if (m.type === 'attributes') { labelIconButtons(m.target.parentNode || document); continue; }
-    m.addedNodes.forEach(n => { if (n.nodeType === 1) labelIconButtons(n.matches?.('button') && n.parentNode ? n.parentNode : n); });
+    m.addedNodes.forEach(n => { if (n.nodeType === 1) { const r = n.matches?.('button') && n.parentNode ? n.parentNode : n; labelIconButtons(r); labelFormFields(r); } });
   }
 }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] });
 </script>

@@ -48,6 +48,41 @@ export function dragCropRect(c, handle, dx, dy, ratio = 0, min = 24) {
   return { x, y, w, h };
 }
 
+/* The largest box of aspect `ratio` (w/h) inside `bounds` {x,y,w,h}, centred as near the current
+   box's centre as the bounds allow — what picking a ratio chip should do to the box straight away. */
+export function fitCropRect(c, ratio, bounds) {
+  if (!(ratio > 0) || !bounds) return c;
+  let w = bounds.w, h = w / ratio;
+  if (h > bounds.h) { h = bounds.h; w = h * ratio; }
+  const cx = c.x + c.w / 2, cy = c.y + c.h / 2;
+  const x = Math.min(Math.max(cx - w / 2, bounds.x), bounds.x + bounds.w - w);
+  const y = Math.min(Math.max(cy - h / 2, bounds.y), bounds.y + bounds.h - h);
+  return { x, y, w, h };
+}
+
+/* Keep a dragged box inside `bounds`: a moved box slides back in whole; a resized one is cut at the
+   edge it crossed. With a locked `ratio` the cut side's partner shrinks too, so the aspect holds. */
+export function clampCropRect(c, bounds, handle, ratio = 0) {
+  if (!bounds) return c;
+  let { x, y, w, h } = c;
+  if (handle === 'move') {
+    w = Math.min(w, bounds.w); h = Math.min(h, bounds.h);
+    x = Math.min(Math.max(x, bounds.x), bounds.x + bounds.w - w);
+    y = Math.min(Math.max(y, bounds.y), bounds.y + bounds.h - h);
+    return { x, y, w, h };
+  }
+  const x1 = Math.min(x + w, bounds.x + bounds.w), y1 = Math.min(y + h, bounds.y + bounds.h);
+  const x0 = Math.max(x, bounds.x), y0 = Math.max(y, bounds.y);
+  let nw = x1 - x0, nh = y1 - y0;
+  if (ratio > 0 && (nw !== w || nh !== h)) {
+    if (nw / ratio > nh) nw = nh * ratio; else nh = nw / ratio;
+    // keep the side opposite the dragged handle anchored
+    const left = handle && handle.includes('l'), top = handle && handle.includes('t');
+    return { x: left ? x1 - nw : x0, y: top ? y1 - nh : y0, w: nw, h: nh };
+  }
+  return { x: x0, y: y0, w: nw, h: nh };
+}
+
 /* Commit the crop: every object shifts by (-x, -y) and the artboard becomes (w, h). The caller
    passes the fabric canvas; the paint engine (if any) is handed back new dimensions so its
    offscreen canvas is re-based too. */

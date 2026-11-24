@@ -37,6 +37,27 @@ export function installStrokePosition(fabric) {
     try { baseStroke.call(this, ctx); } finally { this.strokeWidth = w; }
     ctx.restore();
   };
+  // A rounded photo's border follows its rounded corners. Fabric strokes an image as a plain rectangle, which
+  // pokes square corners out past the rounded clip; draw the rounded outline instead (the clip is widened by
+  // the editor so the whole width shows). Centre-line stroke, like every image border.
+  const I = fabric.Image && fabric.Image.prototype;
+  if (I) {
+    const imgStroke = I._renderStroke;
+    I._renderStroke = function (ctx) {
+      const c = this.clipPath;
+      if (this.strokeOff || !this.stroke || !this.strokeWidth || !c || c.role !== 'corner') return imgStroke.call(this, ctx);
+      const sw = this.strokeWidth, w = this.width, h = this.height, rx = Math.max(0, (c.rx || 0) - sw / 2), ry = Math.max(0, (c.ry || 0) - sw / 2), x = -w / 2, y = -h / 2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x + rx, y); ctx.lineTo(x + w - rx, y); ctx.quadraticCurveTo(x + w, y, x + w, y + ry);
+      ctx.lineTo(x + w, y + h - ry); ctx.quadraticCurveTo(x + w, y + h, x + w - rx, y + h);
+      ctx.lineTo(x + rx, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - ry);
+      ctx.lineTo(x, y + ry); ctx.quadraticCurveTo(x, y, x + rx, y); ctx.closePath();
+      ctx.lineWidth = sw; ctx.strokeStyle = this.stroke; ctx.lineJoin = 'round';
+      if (this.strokeDashArray) ctx.setLineDash(this.strokeDashArray);
+      ctx.stroke(); ctx.restore();
+    };
+  }
   // An outside border paints past the object's box, which its cache canvas would crop.
   P.shouldCache = function () {
     if (this.strokePosition === 'outside' && this.stroke && this.strokeWidth && !this.strokeOff && canPositionStroke(this)) { this.ownCaching = false; return false; }

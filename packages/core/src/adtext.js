@@ -22,12 +22,15 @@ export function makeCTA(fabric, pt, o = {}) {
   const font = o.font || o.fontFamily || 'system-ui, sans-serif';
   const fill = o.fill || o.color || '#ef6a2d';
   const ink = o.ink || (relLum(hexRgb(fill)) > 0.6 ? '#0c0c0e' : '#ffffff');
-  const txt = new fabric.Text(o.text || 'Shop now', { fontFamily: font, fontWeight: 700, fontSize: s, fill: ink, originX: 'left', originY: 'center' });
+  // The pill draws its own arrow, so one typed at the end of the label ("Shop now →") doubled it.
+  const label = String(o.text || 'Shop now').replace(/\s*(?:→|->|➔|➜|›|»|>)+\s*$/u, '') || 'Shop now';
+  const txt = new fabric.Text(label, { fontFamily: font, fontWeight: 700, fontSize: s, fill: ink, originX: 'left', originY: 'center' });
   const arrowW = s * 0.9;
   const w = padX * 2 + txt.width + s * 0.5 + arrowW, h = s + padY * 2;
   const rect = new fabric.Rect({ width: w, height: h, rx: h / 2, ry: h / 2, fill, originX: 'left', originY: 'top', left: 0, top: 0 });
   txt.set({ left: padX, top: h / 2 });
   const arrow = new fabric.Text('→', { fontFamily: font, fontWeight: 700, fontSize: s, fill: ink, originX: 'left', originY: 'center', left: padX + txt.width + s * 0.4, top: h / 2 });
+  txt.adField = 'text';
   const g = new fabric.Group([rect, txt, arrow], { left: pt.x - w / 2, top: pt.y - h / 2, ...BASE });
   g.set({ id: uid(), role: 'cta', name: 'CTA' });
   return g;
@@ -43,6 +46,7 @@ export function makeBadge(fabric, pt, o = {}) {
   const w = padX * 2 + txt.width, h = s + padY * 2;
   const rect = new fabric.Rect({ width: w, height: h, rx: h / 2, ry: h / 2, fill, originX: 'left', originY: 'top' });
   txt.set({ left: padX, top: h / 2 });
+  txt.adField = 'text';
   const g = new fabric.Group([rect, txt], { left: pt.x - w / 2, top: pt.y - h / 2, ...BASE });
   g.set({ id: uid(), role: 'badge', name: 'Badge' });
   return g;
@@ -55,13 +59,16 @@ export function makePrice(fabric, pt, o = {}) {
   const fill = o.fill || o.color || '#111114';
   const items = []; let x = 0;
   const cur = new fabric.Text(o.current || '$0', { fontFamily: font, fontWeight: 800, fontSize: s, fill, originX: 'left', originY: 'center', left: x, top: 0 });
+  cur.adField = 'current';
   items.push(cur); x += cur.width + gap;
   if (o.original) {
-    const orig = new fabric.Text(o.original, { fontFamily: font, fontWeight: 400, fontSize: s * 0.7, fill: '#9a988f', linethrough: true, originX: 'left', originY: 'center', left: x, top: 0 });
+    const orig = new fabric.Text(o.original, { fontFamily: font, fontWeight: 400, fontSize: s * 0.7, fill: o.originalInk || '#9a988f', linethrough: true, originX: 'left', originY: 'center', left: x, top: 0 });
+    orig.adField = 'original';
     items.push(orig); x += orig.width + gap;
   }
   if (o.save) {
     const sv = new fabric.Text(o.save, { fontFamily: font, fontWeight: 700, fontSize: s * 0.6, fill: o.accent || '#d4ff45', originX: 'left', originY: 'center', left: x, top: 0 });
+    sv.adField = 'save';
     items.push(sv); x += sv.width;
   }
   const h = s;
@@ -81,6 +88,7 @@ export function makeBrandLockup(fabric, pt, o = {}) {
   const mark = new fabric.Rect({ width: mk, height: mk, rx: mk * 0.3, ry: mk * 0.3, fill: color, originX: 'left', originY: 'top', left: 0, top: 0 });
   const letter = new fabric.Text((name[0] || 'B').toLowerCase(), { fontFamily: "'Instrument Serif', serif", fontStyle: 'italic', fontSize: mk * 0.72, fill: letterFill, originX: 'center', originY: 'center', left: mk / 2, top: mk / 2 });
   const nameTxt = new fabric.Text(name, { fontFamily: font, fontWeight: 700, fontSize: s, fill: color, originX: 'left', originY: 'center', left: mk + s * 0.45, top: mk / 2 });
+  nameTxt.adField = 'text';
   const w = mk + s * 0.45 + nameTxt.width, h = mk;
   const g = new fabric.Group([mark, letter, nameTxt], { left: pt.x - w / 2, top: pt.y - h / 2, ...BASE });
   g.set({ id: uid(), role: 'brand', name: 'Brand' });
@@ -112,4 +120,30 @@ export function applyLegibilityShadow(fabric, textbox, variant = 'dark') {
   const color = variant === 'light' ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.55)';
   textbox.set('shadow', new fabric.Shadow({ color, blur: Math.max(3, s * 0.28), offsetX: 0, offsetY: Math.max(1, s * 0.03) }));
   return textbox;
+}
+
+/* The factory per ad-copy role, and the options each one reads — what an edited CTA/badge/price/
+   brand is rebuilt from (Editor#_finishAdEdit), so the pill resizes and the price re-flows. */
+export const AD_FACTORIES = { cta: makeCTA, badge: makeBadge, price: makePrice, brand: makeBrandLockup };
+export const AD_OPT_KEYS = ['size', 'font', 'fontFamily', 'fill', 'color', 'ink', 'accent', 'originalInk', 'text', 'current', 'original', 'save'];
+
+/* Options for a group made before adOpts was stored (or by a template): read back off its parts. */
+export function deriveAdOpts(g) {
+  const kids = g._objects || [], texts = kids.filter(k => typeof k.text === 'string');
+  const shape = kids.find(k => k.type === 'rect');
+  const o = {};
+  if (g.role === 'price') {
+    const cur = texts.find(t => t.adField === 'current') || texts[0];
+    const orig = texts.find(t => t.adField === 'original') || texts.find(t => t !== cur && t.linethrough);
+    const save = texts.find(t => t.adField === 'save') || texts.find(t => t !== cur && t !== orig);
+    if (cur) Object.assign(o, { current: cur.text, size: cur.fontSize, font: cur.fontFamily, fill: cur.fill });
+    if (orig) o.original = orig.text;
+    if (save) Object.assign(o, { save: save.text, accent: save.fill });
+    return o;
+  }
+  const label = texts.find(t => t.adField === 'text') || (g.role === 'brand' ? texts[texts.length - 1] : texts.find(t => t.text !== '→'));
+  if (label) Object.assign(o, { text: label.text, size: label.fontSize, font: label.fontFamily });
+  if (g.role === 'brand') { if (shape) o.color = shape.fill; }
+  else { if (shape) o.fill = shape.fill; if (label) o.ink = label.fill; }
+  return o;
 }

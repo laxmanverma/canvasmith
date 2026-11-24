@@ -18,7 +18,7 @@
    magicEdit's optional 3rd argument (a mask dataURL — white = the model may repaint, black = keep
    pixel-identical) is forwarded as DittoAPI's own `maskDataURL` field whenever the Canvasmith
    caller supplies one (Editor#aiBgSwap/#aiExtendBackground do, for a masked background edit) —
-   the field is simply omitted otherwise, matching every other optional-field call here. */
+   the field is simply omitted otherwise, matching every other optional-field call here.
 
    MIGRATION PATH for the platform, when ready:
      1. Ship @canvasmith/core alongside fabricEditor.jsx (no conflict — different globals).

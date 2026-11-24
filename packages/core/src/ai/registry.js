@@ -25,6 +25,11 @@ export const CAPABILITIES = [
   'removeBackground', // (imageDataURL)              -> imageDataURL   subject cutout with alpha
   'detectRegions',    // (imageDataURL)              -> [{type,bbox:{x,y,width,height in %},content?}]
   'describe',         // (imageDataURL)              -> string         alt-text / layer naming
+  'locateObject',     // (imageDataURL, description) -> {x,y,width,height in %} | null   where a named
+                       //   thing ("the dog") is in the picture; the editor refines the box with GrabCut
+  'interpretCommand', // (transcript, ctx)           -> [{action,...}] free-form spoken/typed request
+                       //   -> editor commands (the voice.js vocabulary). Text only, no image. The
+                       //   caller validates every command, so a provider can't run anything off-list.
 ];
 
 export class AIRegistry {

@@ -30,6 +30,7 @@ export function updateSelection(sel, pt, opts = {}) {
 /* A selection smaller than a few pixels is a slipped click, not intent. */
 export function finalizeSelection(sel) {
   if (!sel) return null;
+  if (sel.kind === 'multipoly') return sel;
   const ok = sel.kind === 'poly' ? sel.pts.length > 2 : (sel.w > 6 && sel.h > 6);
   return ok ? sel : null;
 }
@@ -235,9 +236,14 @@ export function selectionBounds(sel, W, H) {
    like a crop rect once it exists, so dragging it can resize or move it instead of only ever
    starting a fresh drag-to-select. `tol` shrinks with zoom so handles stay a constant screen size. */
 export function getSelectionHandle(sel, pt, z) {
-  if (!sel || (sel.kind !== 'rect' && sel.kind !== 'ellipse')) return null;
+  if (!sel || sel.building) return null;
+  const poly = sel.kind === 'poly' || sel.kind === 'multipoly';
   const tol = 12 / z;
-  const cx = sel.x, cy = sel.y, cw = sel.w, ch = sel.h;
+  // wand / lasso / object-select results are polygons: they get the same 8 handles on their bounding box
+  const bb = poly ? selectionBounds(sel) : sel;
+  const cx = bb.x, cy = bb.y, cw = bb.w, ch = bb.h;
+  // a polygon selection is reshaped by its own outline points; it has no bounding-box handles, only drag-inside-to-move
+  if (poly) return pointInSelection(sel, pt) ? 'move' : null;
   const mx = cx + cw / 2, my = cy + ch / 2;
   const rx = cx + cw, ry = cy + ch;
   if (Math.hypot(pt.x - cx, pt.y - cy) < tol) return 'tl';
@@ -248,8 +254,28 @@ export function getSelectionHandle(sel, pt, z) {
   if (Math.hypot(pt.x - mx, pt.y - ry) < tol) return 'b';
   if (Math.hypot(pt.x - cx, pt.y - my) < tol) return 'l';
   if (Math.hypot(pt.x - rx, pt.y - my) < tol) return 'r';
-  if (pt.x >= cx && pt.x <= rx && pt.y >= cy && pt.y <= ry) return 'move';
+  if (poly ? pointInSelection(sel, pt) : (pt.x >= cx && pt.x <= rx && pt.y >= cy && pt.y <= ry)) return 'move';
   return null;
+}
+
+/* Even-odd point-in-polygon over every ring (holes count), for irregular selections. */
+export function pointInSelection(sel, pt) {
+  const rings = selectionPolys(sel) || [];
+  let inside = false;
+  for (const ring of rings) for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/* Re-fit a polygon selection from its original bounding box into a new one (handle drag = scale, move = translate). */
+export function fitSelectionToBox(sel, from, to) {
+  const sx = from.w ? to.w / from.w : 1, sy = from.h ? to.h / from.h : 1;
+  const m = p => ({ x: to.x + (p.x - from.x) * sx, y: to.y + (p.y - from.y) * sy });
+  const out = { ...sel };
+  if (sel.kind === 'multipoly') out.polys = sel.polys.map(r => r.map(m)); else out.pts = sel.pts.map(m);
+  return out;
 }
 
 /* Drag a selection handle: same math as crop.js's dragCropRect, but with no aspect-ratio lock
@@ -315,4 +341,43 @@ export class HoverCache {
   }
   clear() { this._map.clear(); }
   get size() { return this._map.size; }
+}
+
+/* Shoelace area of one ring (always positive). */
+export function polyArea(pts) {
+  let t = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) t += (pts[j].x + pts[i].x) * (pts[j].y - pts[i].y);
+  return Math.abs(t / 2);
+}
+
+/* ── editing a polygon selection's own outline (wand / lasso / object-select results) ─────────
+   hitSelectionVertex finds a vertex under the pointer, else a point on an edge (so a drag there
+   inserts a new vertex). softMoveRing drags a vertex and, unless `soft` is off, its neighbours with
+   a smooth cosine falloff — so a wand outline can be reshaped like clay instead of one jagged point. */
+export function selectionRings(sel) {
+  if (!sel || sel.building) return null;
+  if (sel.kind === 'multipoly') return sel.polys;
+  if (sel.kind === 'poly') return [sel.pts];
+  return null;
+}
+export function hitSelectionVertex(sel, pt, z) {
+  const rings = selectionRings(sel); if (!rings) return null;
+  const vt = 9 / z, et = 6 / z;
+  let best = null, bd = vt;
+  rings.forEach((r, ri) => r.forEach((q, i) => { const d = Math.hypot(q.x - pt.x, q.y - pt.y); if (d < bd) { bd = d; best = { ring: ri, idx: i }; } }));
+  if (best) return best;
+  let ed = et;
+  rings.forEach((r, ri) => { for (let i = 0; i < r.length; i++) {
+    const a = r[i], b = r[(i + 1) % r.length], dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / l2)), px = a.x + t * dx, py = a.y + t * dy, d = Math.hypot(pt.x - px, pt.y - py);
+    if (d < ed) { ed = d; best = { ring: ri, edge: i, pt: { x: px, y: py } }; }
+  } });
+  return best;
+}
+export function softMoveRing(orig, gi, dx, dy, R, soft) {
+  const g = orig[gi];
+  return orig.map((q, i) => {
+    const w = i === gi ? 1 : soft ? 0.5 * (1 + Math.cos(Math.PI * Math.min(1, Math.hypot(q.x - g.x, q.y - g.y) / R))) : 0;
+    return w ? { x: q.x + dx * w, y: q.y + dy * w } : { x: q.x, y: q.y };
+  });
 }

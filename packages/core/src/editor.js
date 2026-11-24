@@ -14,11 +14,13 @@ import {
   startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild,
   buildEdgeMapFromImageData, snapToEdge,
   selectionPolys, polysToSelection, addPolyToSelection, selectionBounds, HoverCache,
-  getSelectionHandle, dragSelectionRect,
+  getSelectionHandle, dragSelectionRect, fitSelectionToBox, polyArea, hitSelectionVertex, softMoveRing, selectionRings,
 } from './selection.js';
-import { makeShape, resizeShapeTo, makeText, layerLabel, describeLayer, isContainerGroup, uid, fontCss } from './shapes.js';
-import { getCropHandle, dragCropRect, applyCrop } from './crop.js';
+import { makeShape, resizeShapeTo, makeText, makeTextBox, layerLabel, clipLabel, describeLayer, isContainerGroup, uid, fontCss, installTextCaretKeys, installFlipPreservingRestore } from './shapes.js';
+import { getCropHandle, dragCropRect, applyCrop, fitCropRect, clampCropRect } from './crop.js';
 import { makeToneFilterClass, lumaHistogram } from './tone.js';
+import { makeSharpenFilterClass } from './sharpen.js';
+import { makeColorMatchFilterClass, computeMatch } from './colormatch.js';
 import { makeGeometryFilterClass, GEOMETRY_DEFAULTS, UNIT_QUAD, squareToQuad, mapHomography, applyGeometry } from './geometry.js';
 import { alignDelta, snapDelta } from './layout.js';
 import { EXTRA, serialize, restore, exportImage, addImageLayer, artboardForImage, loadImageEl } from './io.js';
@@ -31,8 +33,10 @@ import { node as penNode, cloneNodes, nodesToPathD, commandsToNodes, isSmooth, m
 import { CvEngine, prepImageData } from './cv/client.js';
 import { makeMaskFilterClass, createMaskCanvas, maskStamp, maskLine, serializeMask, deserializeMask, invertMaskCanvas,
   isVectorMaskable, createVectorMaskCanvas, vectorMaskPoint, touchVectorMask, attachVectorMask } from './mask.js';
+import { BOOLEAN_OPS, BOOLEAN_LABEL, hasClipEngine, combinableReason, objectRings, combineRings, ringsToPathD } from './booleans.js';
+import { fetchIconSVG } from './icons.js';
 import { stickerSpec, STICKER_PALETTE, STICKER_DEFAULT_LABEL } from './stickers.js';
-import { makeCTA, makeBadge, makePrice, makeBrandLockup } from './adtext.js';
+import { makeCTA, makeBadge, makePrice, makeBrandLockup, AD_FACTORIES, AD_OPT_KEYS, deriveAdOpts } from './adtext.js';
 import { buildPromoLayout, buildLayerFromSpec } from './templates.js';
 import { fillHoles, analyzeBox, knockoutBackground, textLines } from './regions.js';
 import { installStrokePosition, applyStrokeStyle, strokeInfo } from './stroke.js';
@@ -138,6 +142,7 @@ export function outlineRegion(o) {
   return o;
 }
 export const REGION_NAME = { product: 'Product', logo: 'Logo', text: 'Text', sticker: 'Sticker', decorative: 'Decoration' };
+const MAX_FRAMES = 12, FRAME_GAP = 120;   // pasteboard gap between frames
 const SEL_EPS = 0.0022;   // contour fidelity passed to the cv wand — smaller hugs the edge harder
 
 /* Snaps `to` onto the nearest 45° ray from `from` — the gradient tool's Shift-constrain, matching
@@ -203,11 +208,21 @@ function editArgs(image, text, mask, reference) {
   return mask ? [image, text, mask] : [image, text];
 }
 
+/* Object types that can carry a Fabric fill, i.e. the ones a gradient can be applied to as a fill. */
+const GRADIENT_FILLABLE = ['rect', 'ellipse', 'circle', 'triangle', 'polygon', 'path', 'i-text', 'text', 'textbox'];
+
 export class Editor {
   constructor({ fabric, canvasEl, width = 1080, height = 1080, background = '#ffffff', voidColor = '#0a0a0c', openCvUrl } = {}) {
     if (!fabric) throw new Error('Pass fabric (v5) into the Editor — it is a peer dependency.');
     this.fabric = fabric;
+    // Fabric rounds every number it serialises to NUM_FRACTION_DIGITS (2 by default), and history,
+    // autosave and project files all go through toJSON — so a 760px-wide layer at scale 1.0556 came
+    // back from a reload (or an undo) as 1.06, i.e. 763px, off its alignment. Keep enough precision
+    // for a sub-pixel round trip at any realistic size.
+    if (fabric.Object && !(fabric.Object.NUM_FRACTION_DIGITS >= 6)) fabric.Object.NUM_FRACTION_DIGITS = 6;
     installStrokePosition(fabric);   // Border position (inside/outside) — see stroke.js
+    installTextCaretKeys(fabric);    // End/Home/Cmd+arrows reach the line edge with a word highlighted
+    installFlipPreservingRestore(fabric);   // a flipped layer leaves a multi-selection still flipped, not turned 180°
     // MaskFilter (see mask.js) only implements Fabric's Canvas2D filter path (applyTo2d), not a
     // WebGL shader — Fabric defaults to WebGL filtering whenever the browser supports it, which
     // would silently no-op a mask (and any other future custom filter) with no error. Forcing
@@ -249,6 +264,7 @@ export class Editor {
       // instead of getting dimmed along with the content underneath it.
       controlsAboveOverlay: true,
     });
+    this.accent = '#4f8ff0';       // working-frame outline/label + pen overlay colour; hosts theme it via setAccent()
     this._voidColor = voidColor;   // see setVoidColor() / the off-canvas mask below
     this._background = background; // the artboard's starting page colour — reset() paints it back after fc.clear() nulls it
     // fabric.Canvas's OWN _renderBackground paints fc.backgroundColor across (0,0)-(fc.width,
@@ -266,6 +282,7 @@ export class Editor {
       // A transparent or translucent page shows a checkerboard on screen only. fc.interactive is
       // false during toCanvasElement (exports, backgroundGapFraction), so exports keep real alpha.
       if (this.fc.interactive && opt && opt.ctx && (!bg || typeof bg !== 'string' || !/^#/.test(bg))) this._paintChecker(opt.ctx);
+      if (this._frames.length > 1) this._paintOtherFrames(opt && opt.ctx ? opt.ctx : this.fc.getContext());
       if (!bg || bg === 'transparent') return;
       // Use the ctx fabric actually fired with, NOT fc.getContext() — that always returns the
       // main ON-SCREEN context, but exportPNG/exportJPEG (toCanvasElement) temporarily calls
@@ -291,8 +308,16 @@ export class Editor {
     // this.fc.interactive, which fabric itself flips to false during toCanvasElement's temporary
     // render (exportPNG/exportJPEG) — so the exported image is never affected, only the live
     // on-screen view is.
+    // An adjustment layer covers the whole artboard and sits on top of what it adjusts, so as a
+    // hit target it swallowed every canvas click — nothing under it could be picked. Like
+    // Photoshop's, it's chosen from the layers panel only; clicks go through to the art below.
+    const checkTarget = this.fc._checkTarget;
+    this.fc._checkTarget = function (pointer, obj, globalPointer) {
+      return obj && obj.role === 'adjustment' ? false : checkTarget.call(this, pointer, obj, globalPointer);
+    };
     this.fc._renderOverlay = (ctx) => {
-      if (!this.fc.interactive || !this._voidColor) return;
+      if (!this.fc.interactive) return;
+      if (!this._voidColor) { this._drawFrameLabels(ctx); return; }
       const v = this.fc.viewportTransform;
       ctx.save();
       // Everything outside the artboard, in STAGE (untransformed) space — cheaper and simpler
@@ -300,13 +325,19 @@ export class Editor {
       // it's defined directly in canvas pixels.
       ctx.beginPath();
       ctx.rect(0, 0, this.fc.width, this.fc.height);
-      const tl = fabric.util.transformPoint({ x: 0, y: 0 }, v);
-      const br = fabric.util.transformPoint({ x: this.W, y: this.H }, v);
-      ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+      // One hole per frame, so other frames' content stays visible while spill-over between and
+      // around frames is still covered.
+      this._frames.forEach(f => {
+        const r = this._frameRect(f);
+        const tl = fabric.util.transformPoint({ x: r.x, y: r.y }, v);
+        const br = fabric.util.transformPoint({ x: r.x + r.w, y: r.y + r.h }, v);
+        ctx.rect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+      });
       ctx.clip('evenodd');
       ctx.fillStyle = this._voidColor;
       ctx.fillRect(0, 0, this.fc.width, this.fc.height);
       ctx.restore();
+      this._drawFrameLabels(ctx);
     };
     // Themed selection handles + outline instead of Fabric's stock squares and faint light-blue
     // border — applied per-object on 'object:added' rather than mutating the shared
@@ -316,7 +347,24 @@ export class Editor {
     // colour can't (the old orange vanished on photos; plain blue vanishes on a blue shape).
     // Handles are white with a blue ring for the same reason. Same blue as the drag-select box (selectionBorderColor).
     const handleAccent = '#0b6bd3';
+    // Figma-style rotate zones: an invisible hit area just outside each corner handle. Hover shows a
+    // rotate cursor, drag rotates about the centre (Shift snaps). The top lollipop handle stays.
+    const F = this.fabric, cu = F.controlsUtils;
+    const rotCursor = (deg) => {
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><g transform='rotate(${deg} 12 12)'><path d='M5.5 15.5A8 8 0 0 1 12 6a8 8 0 0 1 6.5 3.3' fill='none' stroke='white' stroke-width='4.2' stroke-linecap='round'/><path d='M5.5 15.5A8 8 0 0 1 12 6a8 8 0 0 1 6.5 3.3' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'/><path d='M14 3.5l5 6-7.5 1z' fill='black' stroke='white' stroke-width='1.2' stroke-linejoin='round'/></g></svg>`;
+      return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 12 12, crosshair`;
+    };
+    const ROT_CORNERS = { tlr: [-0.5, -0.5, -1, -1, 0], trr: [0.5, -0.5, 1, -1, 90], brr: [0.5, 0.5, 1, 1, 180], blr: [-0.5, 0.5, -1, 1, 270] };
+    const rotControls = {};
+    for (const [k, [x, y, ox, oy, deg]] of Object.entries(ROT_CORNERS)) {
+      rotControls[k] = new F.Control({
+        x, y, offsetX: ox * 15, offsetY: oy * 15, sizeX: 20, sizeY: 20, touchSizeX: 28, touchSizeY: 28,
+        actionName: 'rotate', actionHandler: cu.rotationWithSnapping,
+        cursorStyleHandler: () => rotCursor(deg), withConnection: false, render: () => {},
+      });
+    }
     const themeSelection = (o) => {
+      if (o.controls && !o.controls.tlr) o.controls = { ...o.controls, ...rotControls };
       o.set({
         transparentCorners: false, cornerColor: '#ffffff', cornerStrokeColor: handleAccent,
         borderColor: handleAccent, cornerSize: 11, cornerStyle: 'circle', borderScaleFactor: 1.5, padding: 2,
@@ -349,7 +397,19 @@ export class Editor {
     makeMaskFilterClass(fabric);
     makeToneFilterClass(fabric); // same registry requirement — see tone.js
     makeGeometryFilterClass(fabric); // and geometry.js
+    makeSharpenFilterClass(fabric); // and sharpen.js
+    makeColorMatchFilterClass(fabric); // and colormatch.js
     this.history = new History(60);
+    // Frames: a page (the fabric scene) holds one or more artboards. The ACTIVE frame is always
+    // at scene (0,0) with size W×H — so every existing tool that reads W/H keeps meaning "the
+    // frame I'm working in" — and the others sit at x/y/w/h elsewhere on the pasteboard.
+    // Activating a frame re-origins the whole scene (see _switchFrame) rather than teaching the
+    // engine about offsets.
+    this._frames = [{ id: uid(), name: 'Frame 1' }];
+    this._frameActive = this._frames[0].id;
+    this._frameSeq = 1;
+    this._org = { x: 0, y: 0 };      // total scene translation applied so far — lets undo keep the view still
+    this._frameLabels = [];          // on-screen label hit rects, refreshed every render
     this.ai = new AIRegistry();
     // OpenCV worker RPC — boots lazily on first cv-backed call. openCvUrl overrides
     // DEFAULT_OPENCV_URL (a root-relative path — see cv/worker.js) for hosts that serve the
@@ -362,6 +422,7 @@ export class Editor {
       gradientType: 'linear', gradientStops: [{ offset: 0, color: '#ef6a2d' }, { offset: 1, color: '#7c3aed' }],
       addMode: false,   // sticky "keep adding every click to the selection" toggle for wand/objectselect/hoverselect
       paintNewLayer: false,   // paint tools retouch the image itself by default — see _bindPaintTarget
+      bucketTolerance: 32,    // paint bucket's colour match (Photoshop's default); the select tools use `tolerance`
     };
     this.selection = null;
     this.crop = null;               // {x,y,w,h} while the crop tool is live
@@ -385,6 +446,7 @@ export class Editor {
     this.multiCount = 0;            // # of polygons accumulated in an objectselect multipoly (before Merge)
     this._edgeMapSeq = 0;           // monotonic token so an in-flight buildMagneticEdgeMap can't land after a resize/crop
     this._destroyed = false;        // set by destroy() — async continuations check this before touching this.fc
+    this._maskGrad = null;           // {layerId, from, snap, reverse, moved} while a gradient is being dragged onto a mask
     this._maskEdit = null;           // {layerId} while a mask is being painted — see enterMaskEdit()
     this._persp = null;              // {id, saved, corners, drag} while 4-corner perspective is being placed — see enterPerspectiveEdit()
     this.geometryGuide = null;       // [[{x,y},{x,y}], ...] scene-space grid shown while straightening live
@@ -398,6 +460,8 @@ export class Editor {
     this._bindLastActive();
     this._bindIsolation();
     this._bindSpacePan();
+    this.fc.targetFindTolerance = 6;   // a thin border on a fill-less shape (see _syncHitAreas) stays easy to grab
+    this._bindFontWatch();
     this._bindProportionalSideScale();
     this._bindRoundCorners();
     this.setSnapEnabled(true);
@@ -435,6 +499,15 @@ export class Editor {
     if (!ALL_TOOLS.includes(t)) throw new Error('Unknown tool "' + t + '". Tools: ' + ALL_TOOLS.join(', '));
     const prev = this.tool;
     if (t !== prev) this._drawLayer = null;   // a new brush session starts a new paint layer
+    /* Picking the eyedropper with a shape or text selected means "colour THIS like that" (Canva,
+       Figma): remember it, since the switch below deselects it. With nothing selected the picked
+       colour just becomes the brush colour, as before. */
+    if (t === 'eyedropper' && prev !== 'eyedropper') {
+      const a = this.fc.getActiveObject();
+      // ad copy (CTA/badge/price/brand) recolours through _applyFill too, even with no group fill yet
+      const ad = !!(a && a.type === 'group' && AD_FACTORIES[a.role]);
+      this._dropperTarget = a && a.type !== 'activeSelection' && a.type !== 'image' && (a.type !== 'group' || a.role === 'shape' || ad) && a.role !== 'bg' && a.role !== 'adjustment' && a.role !== 'paint' && (typeof a.fill === 'string' || ad) ? a.id : null;
+    } else if (t !== 'eyedropper') this._dropperTarget = null;
     if (CLICK_LASSOS.includes(prev) && prev !== t) this._polyBuild = null;
     // Keep/Remove touch-ups are brush strokes — another tool (even the eraser) ends them
     if (t !== 'brush' && this.toolOpts && this.toolOpts.maskRefine) { this.toolOpts.maskRefine = null; this._emit('maskrefine', null); }
@@ -498,6 +571,7 @@ export class Editor {
           left: target.left - (target.cropX || 0) * sx, top: target.top - (target.cropY || 0) * sy,
           cropX: 0, cropY: 0, width: el.naturalWidth || el.width, height: el.naturalHeight || el.height,
         });
+        this._normalizeCorners(target);
         target.dirty = true;
         target.setCoords();
         this.crop = prevWindow;
@@ -552,6 +626,13 @@ export class Editor {
   setToolOptions(patch) {
     this.toolOpts = { ...this.toolOpts, ...patch };
     this._emit('tooloptions', this.toolOpts);
+    // Picking a crop ratio reshapes the box right away — the largest box of that shape that fits,
+    // centred where the box was — instead of waiting for the next handle drag to apply it.
+    if (patch.cropRatio > 0 && this.tool === 'crop' && this.crop) {
+      this.crop = fitCropRect(this.crop, patch.cropRatio, this._cropBounds() || { x: 0, y: 0, w: this.W, h: this.H });
+      this._emit('crop', this.crop);
+      this.fc.requestRenderAll();
+    }
     // Editing the stops while a shape's gradient handles are up restyles that shape (one undo
     // step per burst, so dragging a colour picker isn't fifty history entries).
     const ge = patch.gradientStops && this._gradEdit && this._byId(this._gradEdit.id);
@@ -606,7 +687,9 @@ export class Editor {
     /* Wheel zoom around the cursor. The old 0.999^deltaY curve felt dead: a trackpad pinch
        (ctrlKey, deltaY ~1-10 per event) moved <1%, and Firefox's line-mode deltas (~3) did nothing.
        Normalize line/page deltas to px, give pinch its own steeper rate, and cap a single event so
-       a fast free-spinning wheel can't jump several levels at once. */
+       a fast free-spinning wheel can't jump several levels at once. The cap is on the zoom STEP
+       (±25% per event), not just the delta: Ctrl+mouse-wheel arrives as ctrlKey with a full 120px
+       notch, which the pinch rate turned into ×6 per notch (eight notches: 43% → 500%). */
     fc.on('mouse:wheel', (opt) => {
       const e = opt.e;
       let delta = e.deltaY;
@@ -614,7 +697,7 @@ export class Editor {
       else if (e.deltaMode === 2) delta *= 400;  // pages
       delta = Math.max(-120, Math.min(120, delta));
       const rate = e.ctrlKey ? 0.985 : 0.998;    // pinch vs wheel/scroll
-      let z = fc.getZoom() * Math.pow(rate, delta);
+      let z = fc.getZoom() * Math.min(1.25, Math.max(0.8, Math.pow(rate, delta)));
       z = Math.min(5, Math.max(0.1, z));
       fc.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, z);
       opt.e.preventDefault(); opt.e.stopPropagation();
@@ -649,33 +732,52 @@ export class Editor {
     // A paint layer is kept trimmed to its painted pixels between strokes (see _trimPaintLayer), so
     // grow it back over the whole artboard first — otherwise the new stroke clips at the old box.
     if (target.role === 'paint') this._expandPaintLayer(target);
-    const xf = this._sceneToLayer(target);
+    let xf = this._sceneToLayer(target);
     if (!xf) { this.engine.setDirectTarget(null); return; }
-    const el = target._element;
+    // The layer's ORIGINAL pixels, not _element: once a layer has filters (adjustments, curves, its
+    // cut-out mask) _element is the filtered render, and painting on that then handing it back via
+    // setElement baked those filters in — Fabric re-applied them on top (a retouched photo's curves
+    // doubled, the cut-out mask burnt into the source).
+    const el = target._originalElement || target._element;
     const cv = document.createElement('canvas');
-    cv.width = xf.w; cv.height = xf.h;
-    // Draw the layer's CURRENT source (crop window included) 1:1 into the scratch canvas — this is
-    // the layer's own pixels, untouched by the artboard's resolution.
-    try { cv.getContext('2d').drawImage(el, xf.cropX, xf.cropY, xf.w, xf.h, 0, 0, xf.w, xf.h); }
+    try {
+      const ew = el.naturalWidth || el.width, eh = el.naturalHeight || el.height;
+      if ((xf.cropX || xf.cropY || xf.w !== ew || xf.h !== eh) && target.role !== 'paint') {
+        /* A cropped image is retouched in its WHOLE source, shifted by the crop offset: the scratch
+           canvas becomes the layer's new source, and handing back just the crop window left
+           cropX/cropY pointing past its edge (the layer went blank) and the mask — laid over the
+           full source — out of register. */
+        cv.width = ew; cv.height = eh;
+        cv.getContext('2d').drawImage(el, 0, 0);
+        const m = xf.m.slice(); m[4] += xf.cropX; m[5] += xf.cropY;
+        xf = { ...xf, m, dx: m[4], dy: m[5] };
+      } else {
+        // Draw the layer's CURRENT source (crop window included) 1:1 into the scratch canvas — this
+        // is the layer's own pixels, untouched by the artboard's resolution.
+        cv.width = xf.w; cv.height = xf.h;
+        cv.getContext('2d').drawImage(el, xf.cropX, xf.cropY, xf.w, xf.h, 0, 0, xf.w, xf.h);
+      }
+    }
     catch (e) { this.engine.setDirectTarget(null); return; }
     this.engine.setDirectTarget(target, cv, xf);
   }
 
-  /* Maps scene px onto `o`'s own pixel grid: {scale, dx, dy} such that
-     target_px = scene_px * scale + d. Only axis-aligned, unflipped layers qualify — a rotated or
-     mirrored image would need a full affine inverse, and every caller here draws with a plain
-     translate/scale. Returns null when the layer can't be targeted safely. */
+  /* Maps scene px onto `o`'s own pixel grid: `m` is the full scene->pixel affine [a,b,c,d,e,f]
+     (the inverse of the layer's transform, shifted so pixel (0,0) is the source's top-left), and
+     `scale` its linear size, for the few callers that need a pixel radius. Rotated, flipped and
+     skewed layers map fine — the engine bakes `m` into the context, so a round dab in the scene is
+     whatever shape it needs to be on the layer. (Before, any flip or rotation made the eraser, clone,
+     heal and dodge silently paint an empty new layer instead.) dx/dy are m's translation. */
   _sceneToLayer(o) {
     if (!o._element) return null;
-    if (o.angle % 360 !== 0 || o.flipX || o.flipY) return null;
-    const sx = o.scaleX || 1, sy = o.scaleY || 1;
-    // Non-uniform scaling would need separate x/y factors throughout the engine (brush dabs are
-    // circles, so they'd have to become ellipses) — not worth it; fall back to a paint layer.
-    if (Math.abs(sx - sy) > 1e-6) return null;
     const w = Math.round(o.width), h = Math.round(o.height);
     if (!(w > 0 && h > 0)) return null;
-    const b = o.getBoundingRect(true);   // scene-space top-left of the drawn image
-    return { scale: 1 / sx, dx: -b.left / sx, dy: -b.top / sx, w, h, cropX: o.cropX || 0, cropY: o.cropY || 0 };
+    const F = this.fabric.util;
+    const inv = F.invertTransform(o.calcTransformMatrix());
+    if (!inv.every(Number.isFinite)) return null;
+    const m = F.multiplyTransformMatrices([1, 0, 0, 1, w / 2, h / 2], inv);
+    const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])) || 1;
+    return { m, scale, dx: m[4], dy: m[5], w, h, cropX: o.cropX || 0, cropY: o.cropY || 0 };
   }
 
   /* Brush/pencil draw onto a paint layer of their own, never into the photo: the selected paint
@@ -762,9 +864,12 @@ export class Editor {
   }
 
   _paintTargetLayer() {
+    // Never an adjustment layer: it's an image internally, but it's rebuilt from the layers below on
+    // every change, so a stroke on it vanished (and, topmost, it was the fallback for every stroke).
+    const paintable = (o) => !o.locked && o.role !== 'adjustment' && (o.type === 'image' || o.role === 'paint');
     const active = this.fc.getActiveObject() || (this._lastActiveId && this._byId(this._lastActiveId));
-    if (active && !active.locked && (active.type === 'image' || active.role === 'paint')) return active;
-    const objs = this.fc.getObjects().filter(o => !o.locked && (o.type === 'image' || o.role === 'paint'));
+    if (active && paintable(active)) return active;
+    const objs = this.fc.getObjects().filter(o => paintable(o) && o.visible !== false);
     return objs.length ? objs[objs.length - 1] : null;
   }
 
@@ -778,7 +883,7 @@ export class Editor {
      hit-testing off (evented:false), hence the manual walk. */
   _gradientShapeAt(pt) {
     const P = new this.fabric.Point(pt.x, pt.y);
-    const FILLABLE = ['rect', 'ellipse', 'circle', 'triangle', 'polygon', 'path', 'i-text', 'text', 'textbox'];
+    const FILLABLE = GRADIENT_FILLABLE;
     const objs = this.fc.getObjects();
     for (let i = objs.length - 1; i >= 0; i--) {
       const o = objs[i];
@@ -903,7 +1008,8 @@ export class Editor {
       const cs = this.engine.cloneState();
       cur.src = cs.src;
       // Shift re-sources just like Alt (see PaintEngine#down), so it must show the same reticle.
-      cur.picking = alt || shift || !cs.src;
+      // heal with no source is a spot heal (fills from the surroundings) — nothing to pick
+      cur.picking = alt || shift || (t === 'clone' && !cs.src);
     }
     this._brushCursor = cur;
     this._emit('brushcursor', cur);
@@ -917,9 +1023,47 @@ export class Editor {
     this.fc.requestRenderAll();
   }
 
+  _startSelResize(handle, pt) {
+    const sel = this.selection, poly = sel.kind === 'poly' || sel.kind === 'multipoly';
+    this._drag = { kind: 'resize-sel', handle, last: pt, down: pt };
+    if (poly) { this._drag.orig = JSON.parse(JSON.stringify(sel)); this._drag.origBox = selectionBounds(sel); }
+  }
+  /* Move the pixel selection (arrow keys / API). */
+  nudgeSelection(dx, dy) {
+    const sel = this.selection; if (!sel || sel.building) return false;
+    const poly = sel.kind === 'poly' || sel.kind === 'multipoly';
+    if (poly) { const b = selectionBounds(sel); this.selection = fitSelectionToBox(sel, b, { x: b.x + dx, y: b.y + dy, w: b.w, h: b.h }); }
+    else { sel.x += dx; sel.y += dy; }
+    this._emit('selection', this.selection); this.fc.renderAll();
+    return true;
+  }
+
   _down(opt) {
+    // An undo/redo restore is still landing (history locked until it does — a few hundred ms on a
+    // photo-heavy page): anything drawn now would be wiped when it lands, its commit dropped by the
+    // lock. Ignore the press instead of losing the shape silently.
+    if (this.history.lock) return;
     const t = this.tool, pt = this._pt(opt), e = opt.e || {};
     const o = { ...this.toolOpts, alt: e.altKey, shift: e.shiftKey };
+    // Space (or the hand tool) pans whatever else is going on — checked first, or holding Space
+    // while editing a mask painted a stroke across the layer instead of moving the view.
+    if (t === 'hand' || this._spaceDown) {
+      this._drag = { kind: 'pan', x: e.clientX, y: e.clientY };
+      this.fc.setCursor('grabbing');
+      return;
+    }
+    if (this._maskEdit && t === 'gradient') {
+      // Photoshop's way to blend one layer into another: drag a reveal -> hide gradient across the
+      // layer's MASK (not the layer's own fill). A snapshot lets every move re-lay the gradient from
+      // scratch, so the drag previews live and Escape-free re-aiming never stacks gradients.
+      const layer = this._byId(this._maskEdit.layerId);
+      if (layer && layer.maskCanvas) {
+        const mc = layer.maskCanvas, snap = document.createElement('canvas'); snap.width = mc.width; snap.height = mc.height;
+        snap.getContext('2d').drawImage(mc, 0, 0);
+        this._maskGrad = { layerId: layer.id, from: pt, snap, reverse: !!e.altKey, moved: false };
+      }
+      return;
+    }
     if (this._maskEdit && (t === 'brush' || t === 'pencil' || t === 'eraser')) {
       const layer = this._byId(this._maskEdit.layerId);
       if (layer && layer.maskCanvas) {
@@ -936,11 +1080,6 @@ export class Editor {
       }
       return;
     }
-    if (t === 'hand' || this._spaceDown) {
-      this._drag = { kind: 'pan', x: e.clientX, y: e.clientY };
-      this.fc.setCursor('grabbing');
-      return;
-    }
     if (this._persp) {
       // perspective edit owns the pointer: grab a corner handle or do nothing
       this._persp.drag = this._perspHit(pt);
@@ -948,6 +1087,7 @@ export class Editor {
       return;
     }
     if ((t === 'pen' || this._pathEdit) && this._penDown(pt, e)) return;
+    this._altDup = null;   // never carry an unused arm into a later, plain drag
     if (t === 'select' && e.altKey) {
       const target = this.fc.findTarget(e);
       if (target && target.selectable && !target.locked) {
@@ -977,6 +1117,24 @@ export class Editor {
       if (r === 'src-set') this._emit('clonesource', { x: pt.x, y: pt.y });
       this._emitBrushCursor(pt, !!e.altKey, !!e.shiftKey);
       return;
+    }
+    /* Any selection can be adjusted after the fact: its 8 bounding-box handles resize it and dragging inside
+       moves it. Wand / object-select / click-lassos use a plain click to (re)select, so for them an
+       interior press only becomes a move once the pointer really drags (otherwise it is replayed as the click). */
+    if (SEL_TOOLS.includes(t) && this.selection && !this._polyBuild && !this._selReplay && !(e.shiftKey || e.altKey)) {
+      // the outline's own points come first: dragging one reshapes the selection from the inside
+      const vh = hitSelectionVertex(this.selection, pt, this.fc.getZoom() || 1);
+      if (vh) {
+        const rings = selectionRings(this.selection);
+        if (vh.edge != null) rings[vh.ring].splice(vh.edge + 1, 0, { x: vh.pt.x, y: vh.pt.y });   // grabbing an edge adds a point there
+        const idx = vh.edge != null ? vh.edge + 1 : vh.idx;
+        this._drag = { kind: 'sel-vertex', ring: vh.ring, idx, orig: rings[vh.ring].map(q => ({ x: q.x, y: q.y })), down: pt, soft: !(e.metaKey || e.ctrlKey), R: 70 / (this.fc.getZoom() || 1) };
+        return;
+      }
+      const handle = getSelectionHandle(this.selection, pt, this.fc.getZoom());
+      const direct = t === 'marquee' || t === 'marquee-ellipse' || t === 'lasso';
+      if (handle && (direct || handle !== 'move')) { this._startSelResize(handle, pt); return; }
+      if (handle) { this._drag = { kind: 'sel-pending', opt, down: pt }; return; }
     }
     if (t === 'marquee' || t === 'marquee-ellipse' || t === 'lasso') {
       // A rect/ellipse marquee's own selection is grabbable, crop-style: clicking one of its 8
@@ -1058,16 +1216,9 @@ export class Editor {
       return;
     }
     if (t === 'type') {
-      const txt = makeText(this.fabric, pt, this.toolOpts);
-      this.fc.add(txt); this.fc.setActiveObject(txt);
-      if (txt.enterEditing) {
-        txt.enterEditing();
-        txt.selectAll();   // placeholder text starts selected, so typing replaces it immediately
-      }
-      this.commit('text');
-      // Back to select: like every other creation tool (see SHAPE_TOOLS' _up), so the next click
-      // hits the canvas normally — Fabric's own double-click-to-edit, not "place another text".
-      this.setTool('select');
+      // Click = auto-width text, drag = a wrapping text box of that width. Which one it is isn't
+      // known until the pointer moves (or doesn't), so creation waits for mouse-up / first real move.
+      this._drag = { kind: 'text-pending', from: pt };
       return;
     }
     if (t === 'bucket') {
@@ -1076,7 +1227,7 @@ export class Editor {
         // No selection: fill the contiguous area of similar colour under the click (Photoshop's
         // paint bucket), not the whole artboard.
         this.engine.captureFlat();
-        const area = this.engine._flat && wandSelect(this.engine._flat, pt, 32);
+        const area = this.engine._flat && wandSelect(this.engine._flat, pt, this.toolOpts.bucketTolerance != null ? this.toolOpts.bucketTolerance : 32);
         if (!area) return;
         this.engine.setClip(selectionToPath2D(area, this.W, this.H), selectionFillRule(area));
       }
@@ -1132,7 +1283,10 @@ export class Editor {
         return;
       }
       const active = this.fc.getActiveObject() || (this._lastActiveId && this._byId(this._lastActiveId));
-      const objTarget = active && active.type !== 'activeSelection' && (active.role !== 'bg' || active.type === 'rect') && !this.selection ? active : null;
+      // Only things that can HOLD a fill take an object gradient. An image (or group, paint layer…) has no
+      // fill to show: it used to get an invisible one stuck on it and the drag appeared to do nothing, so
+      // those fall through to painting the gradient as pixels, exactly as on empty canvas.
+      const objTarget = active && GRADIENT_FILLABLE.includes(active.type) && (active.role !== 'bg' || active.type === 'rect') && active.role !== 'paint' && !this.selection ? active : null;
       if (objTarget) {
         this._drag = { kind: 'gradient-obj', from: pt, obj: objTarget, moved: false };
         this._emitGradientAxis(pt, pt);
@@ -1146,6 +1300,13 @@ export class Editor {
     if (t === 'eyedropper') {
       const hex = this.engine.sample(pt);
       if (hex) { this.setToolOptions({ color: hex, fill: hex }); this._emit('eyedropper', hex); }
+      const target = hex && this._dropperTarget && this._byId(this._dropperTarget);
+      if (target) {
+        // fill the object the eyedropper was picked for, then hand it back selected under Move
+        this._dropperTarget = null;
+        this.activate(target.id);   // back to Move, target selected (shells refresh on 'change')
+        this.setFill(hex);
+      }
       return;
     }
     if (t === 'crop' && this.crop) {
@@ -1170,6 +1331,16 @@ export class Editor {
         const h = this._perspHit(pt);
         if (h !== st.hover) { st.hover = h; this._emitPerspective(); }
         this.fc.setCursor(h >= 0 ? 'move' : 'default');
+      }
+      return;
+    }
+    if (this._maskGrad) {
+      const g = this._maskGrad, layer = this._byId(g.layerId);
+      if (layer && layer.maskCanvas) {
+        if (!g.moved && Math.hypot(pt.x - g.from.x, pt.y - g.from.y) * (this.fc.getZoom() || 1) < 3) return;   // still a click
+        g.moved = true;
+        this._paintMaskGradient(layer, g.snap, g.from, snapAxis(g.from, pt, e.shiftKey), { reverse: g.reverse, radial: this.toolOpts.gradientType === 'radial' });
+        this._refreshMaskFilter(layer); this.fc.requestRenderAll();
       }
       return;
     }
@@ -1219,6 +1390,24 @@ export class Editor {
       return;
     }
     if (d.kind === 'sel') { updateSelection(this.selection, pt, { square: e.shiftKey }); this.fc.renderAll(); this._emit('selection', this.selection); return; }
+    if (d.kind === 'sel-vertex') {
+      const rings = selectionRings(this.selection);
+      if (rings) { rings[d.ring] = softMoveRing(d.orig, d.idx, pt.x - d.down.x, pt.y - d.down.y, d.R, d.soft); if (this.selection.kind === 'poly') this.selection.pts = rings[0]; }
+      this._emit('selection', this.selection); this.fc.renderAll();
+      return;
+    }
+    if (d.kind === 'sel-pending') {
+      if (Math.hypot(pt.x - d.down.x, pt.y - d.down.y) * (this.fc.getZoom() || 1) < 4) return;
+      this._startSelResize('move', d.down); this._drag.last = d.down; this._move(opt); return;
+    }
+    if (d.kind === 'resize-sel' && d.orig) {
+      const tb = dragSelectionRect({ kind: 'rect', ...d.origBox }, d.handle, pt.x - d.down.x, pt.y - d.down.y);
+      this.selection = fitSelectionToBox(d.orig, d.origBox, { x: tb.x, y: tb.y, w: tb.w, h: tb.h });
+      d.last = pt;
+      this._emit('selection', this.selection);
+      this.fc.renderAll();
+      return;
+    }
     if (d.kind === 'resize-sel') {
       this.selection = dragSelectionRect(this.selection, d.handle, pt.x - d.last.x, pt.y - d.last.y);
       d.last = pt;
@@ -1227,6 +1416,17 @@ export class Editor {
       return;
     }
     if (d.kind === 'shape') { resizeShapeTo(d.obj, d.tool, d.from, pt, { square: e.shiftKey }); this.fc.renderAll(); return; }
+    if (d.kind === 'text-pending') {
+      if (!d.obj) {
+        if (Math.hypot(pt.x - d.from.x, pt.y - d.from.y) * (this.fc.getZoom() || 1) < 6) return;   // still a click
+        d.obj = makeTextBox(this.fabric, d.from, 40, this.toolOpts);
+        this.fc.add(d.obj);
+      }
+      d.obj._boxW = Math.max(40, Math.abs(pt.x - d.from.x));   // the width the user drew (Fabric won't go below the longest word)
+      d.obj.set({ left: Math.min(d.from.x, pt.x), width: d.obj._boxW });
+      d.obj.initDimensions(); d.obj.setCoords(); this.fc.renderAll();
+      return;
+    }
     if (d.kind === 'gradient') {
       const to = snapAxis(d.from, pt, e.shiftKey);
       this.engine.paintGradient(d.from.x, d.from.y, to.x, to.y, this.toolOpts.gradientStops, this.toolOpts.gradientType);
@@ -1274,7 +1474,8 @@ export class Editor {
       return;
     }
     if (d.kind === 'crop') {
-      this.crop = dragCropRect(this.crop, d.handle, pt.x - d.last.x, pt.y - d.last.y, this.toolOpts.cropRatio || 0);
+      const ratio = this.toolOpts.cropRatio || 0;
+      this.crop = clampCropRect(dragCropRect(this.crop, d.handle, pt.x - d.last.x, pt.y - d.last.y, ratio), this._cropBounds(), d.handle, ratio);
       d.last = pt;
       this._emit('crop', this.crop);
       this.fc.renderAll();
@@ -1284,6 +1485,11 @@ export class Editor {
 
   _up() {
     if (this._persp && this._persp.drag >= 0) { this._persp.drag = -1; this._emitPerspective(); return; }
+    if (this._maskGrad) {
+      const g = this._maskGrad; this._maskGrad = null; this._flushFrameJob('mask');
+      if (g.moved) this.commit('mask-gradient');     // a plain click lays nothing and records nothing
+      return;
+    }
     if (this._maskEdit && this._maskDrag) {
       this._maskDrag = null; this._flushFrameJob('mask');
       const rs = this._refineStroke, layer = this._byId(this._maskEdit.layerId);
@@ -1295,6 +1501,26 @@ export class Editor {
     if (this._penDrag) { this._penUp(); return; }
     const d = this._drag; this._drag = null;
     if (!d) return;
+    if (d.kind === 'text-pending') {
+      // Dragged: the live Textbox becomes the layer. Clicked: drop auto-width text where it landed.
+      const txt = d.obj || makeText(this.fabric, d.from, this.toolOpts);
+      if (!d.obj) this.fc.add(txt);
+      this.fc.setActiveObject(txt);
+      if (d.obj) {
+        // The placeholder's longest word ("Double-click") is wider than a narrow drawn box and Fabric
+        // clamps a Textbox to its longest word, so the box came out wider than the one drawn. Once
+        // the real text is typed (or editing ends) put the drawn width back.
+        const fit = () => { if (txt._boxW && txt.width !== Math.max(txt._boxW, txt.dynamicMinWidth || 0)) { txt.set('width', txt._boxW); txt.initDimensions(); txt.setCoords(); this.fc.requestRenderAll(); } };
+        txt.on('changed', fit); txt.on('editing:exited', fit);
+      }
+      if (txt.enterEditing) { txt.enterEditing(); txt.selectAll(); }   // placeholder starts selected, so typing replaces it
+      this.commit('text');
+      // Back to select, like every other creation tool, so the next click hits the canvas normally.
+      this.setTool('select');
+      return;
+    }
+    if (d.kind === 'sel-vertex') { this._emit('selection', this.selection); return; }
+    if (d.kind === 'sel-pending') { this._selReplay = true; try { this._down(d.opt); } finally { this._selReplay = false; } return; }   // it was a click, not a drag
     if (d.kind === 'vmask-erase') { this._flushFrameJob('mask'); this.commit('erase'); return; }
     if (d.kind === 'paint') {
       const painted = this.engine._direct && this.engine._direct.layer;
@@ -1324,7 +1550,7 @@ export class Editor {
       // silently leaving it unchanged, so clicking an existing marquee again deselects it like it
       // does everywhere else in the app.
       const dx = d.last.x - d.down.x, dy = d.last.y - d.down.y;
-      if (Math.hypot(dx, dy) < 2) this.selection = null;
+      if (Math.hypot(dx, dy) < 2) { if (!d.orig) this.selection = null; }   // a click on a marquee's handle still deselects it; polygon selections just stay put
       else this.selection = finalizeSelection(this.selection);
       this._emit('selection', this.selection);
     }
@@ -1362,6 +1588,17 @@ export class Editor {
     this.selection = { kind: 'rect', x: 0, y: 0, w: this.W, h: this.H };
     this._emit('selection', this.selection);
     this.fc.renderAll();
+  }
+  /* Select → Modify → Feather: soften the selection edge by `px` (0 = hard again). Honoured by every
+     pixel-copying operation (⌘J copy, move/lift, recolour). Hard-clip operations (delete, clip layer,
+     paint-tool clipping) still use the crisp outline. */
+  featherSelection(px) {
+    if (!this.selection) return { status: 'error', reason: 'no_selection' };
+    const v = Math.max(0, Math.min(250, Math.round(+px || 0)));
+    if (v) this.selection.feather = v; else delete this.selection.feather;
+    this._emit('selection', this.selection);
+    this.fc.renderAll();
+    return { status: 'ok', result: v };
   }
   invertSelection() {
     if (!this.selection) { this.selection = { kind: 'rect', x: 0, y: 0, w: this.W, h: this.H }; }
@@ -1871,6 +2108,39 @@ export class Editor {
     this._penBuild = null; this._penDrag = null; this._penHover = null;
     this._emitPen();
   }
+  /* Scripted pen input, for callers with no pointer (voice, tests): the same state the pen tool's
+     clicks build. `smooth` gives the point symmetrical handles along the path's direction, like
+     click-dragging. Starts a new path, or extends the one being drawn; returns the point count. */
+  penAddPoint(pt, { smooth = false } = {}) {
+    if (this.tool !== 'pen') this.setTool('pen');
+    const x = Math.max(0, Math.min(this.W, pt.x)), y = Math.max(0, Math.min(this.H, pt.y));
+    let b = this._penBuild;
+    if (!b) { b = this._penBuild = { nodes: [], closed: false, contId: null, undo: [], redo: [] }; }
+    else this._penSnap(b);
+    const prev = b.nodes[b.nodes.length - 1], n = penNode(x, y);
+    if (smooth && prev) {
+      const k = 0.3, dx = (x - prev.x) * k, dy = (y - prev.y) * k;
+      n.hi = { x: x - dx, y: y - dy }; n.ho = { x: x + dx, y: y + dy };
+      if (b.nodes.length === 1) prev.ho = { x: prev.x + dx, y: prev.y + dy };
+    }
+    b.nodes.push(n);
+    this._penHover = null; this._emitPen();
+    return b.nodes.length;
+  }
+  /* Closes the path being drawn (a filled shape) and finishes it. Returns the new layer id. */
+  penClosePath() {
+    const b = this._penBuild;
+    if (!b || b.nodes.length < 3) return null;
+    b.closed = true;
+    return this.finishPen();
+  }
+  /* Whole path in one go: points [{x,y}...] in scene px. */
+  penDrawPath(points, { closed = false, smooth = false } = {}) {
+    if (!points || points.length < 2) return null;
+    this.cancelPen();
+    points.forEach(p => this.penAddPoint(p, { smooth }));
+    return closed && points.length >= 3 ? this.penClosePath() : this.finishPen();
+  }
   penUndoPoint() {
     const b = this._penBuild;
     this._penDrag = null;   // a drag in flight pointed at a node that's about to change
@@ -1973,7 +2243,22 @@ export class Editor {
         const imgd = prepImageData(flat, 768);
         const kx = imgd.width / this.W, ky = imgd.height / this.H;
         const seed = { cx: Math.max(1, Math.min(imgd.width - 2, Math.round(pt.x * kx))), cy: Math.max(1, Math.min(imgd.height - 2, Math.round(pt.y * ky))) };
-        const pts = await this.cv.wand({ data: imgd.data, width: imgd.width, height: imgd.height }, seed, this.toolOpts.tolerance, SEL_EPS);
+        // the worker takes ownership of the pixel buffer, so every attempt sends its own copy
+        const run = (tol) => this.cv.wand({ data: new Uint8ClampedArray(imgd.data), width: imgd.width, height: imgd.height }, seed, tol, SEL_EPS);
+        let pts = await run(this.toolOpts.tolerance);
+        // Flood leak guard: on a dark / busy photo a loose tolerance can run through the whole picture
+        // (a click on a basket selecting 97% of the poster). When the result covers most of the image,
+        // try tighter tolerances and keep the loosest one that stays a real region; if none does the
+        // area is genuinely that big (a plain backdrop) and the original result stands.
+        const total = imgd.width * imgd.height;
+        if (pts && pts.length >= 3 && polyArea(pts) > total * 0.5) {
+          for (const tol of [this.toolOpts.tolerance / 2, this.toolOpts.tolerance / 4, this.toolOpts.tolerance / 8]) {
+            if (tol < 4) break;
+            const alt = await run(tol);
+            if (this._destroyed) return { status: 'error', reason: 'destroyed' };
+            if (alt && alt.length >= 3 && polyArea(alt) <= total * 0.5) { pts = alt; break; }
+          }
+        }
         if (this._destroyed) return { status: 'error', reason: 'destroyed' };
         if (pts && pts.length >= 3) poly = this._toSceneEdgeSnapped(pts, imgd.width, imgd.height, 1 / kx, 1 / ky, 0, 0);
       } catch (e) { poly = null; }
@@ -2062,6 +2347,9 @@ export class Editor {
   async _morphSelection(delta) {
     const polys = selectionPolys(this.selection);
     if (!polys) return { status: 'error', reason: 'no_selection' };
+    // an inverted selection's outline is its HOLE: growing the selected area shrinks the hole. Invert and feather survive.
+    const keep = { invert: !!this.selection.invert, feather: this.selection.feather || 0 };
+    if (keep.invert) delta = -delta;
     try {
       const sc = Math.min(1, 1600 / Math.max(this.W, this.H));
       const res = await this.cv.morph(Math.round(this.W * sc), Math.round(this.H * sc),
@@ -2070,6 +2358,8 @@ export class Editor {
       if (res == null) return { status: 'error', reason: 'cv_unavailable' };
       const out = res.map(pl => pl.map(p => ({ x: p.x / sc, y: p.y / sc })));
       this.selection = polysToSelection(out);
+      if (keep.invert) this.selection.invert = true;
+      if (keep.feather) this.selection.feather = keep.feather;
       this.multiCount = out.length;
       this._emit('selection', this.selection);
       this._emit('multicount', this.multiCount);
@@ -2238,6 +2528,8 @@ export class Editor {
         // nested candidates — the flood would just re-find the same innermost object every time.
         let pts = null;
         if (!cycleI) pts = await this.cv.wand({ data: imgd.data, width: imgd.width, height: imgd.height }, seed, this.toolOpts.tolerance, SEL_EPS);
+        // a flood that ran into most of the picture found the BACKDROP, not an object: use the box-scoped cut instead
+        if (pts && pts.length >= 3 && polyArea(pts) > imgd.width * imgd.height * 0.35) pts = null;
         if (!pts || pts.length < 3) {
           const imgd2 = prepImageData(this._objSrc, 768);
           pts = await this.cv.grabcut({ data: imgd2.data, width: imgd2.width, height: imgd2.height }, seed, wk);
@@ -2311,6 +2603,47 @@ export class Editor {
     if (Math.abs(b.w) < 8 || Math.abs(b.h) < 8) return Promise.resolve({ status: 'error', reason: 'no_match', message: 'The selection is too small to find an object in.' });
     return this._trackPick(this._objectsInSelection(polys, b), at || { x: b.x + b.w / 2, y: b.y + b.h / 2 });
   }
+  /* "Select the dog": the provider's locateObject finds a box around the named thing, then the same
+     GrabCut pass the right-click "Select object" uses cuts it out of that box. If the cut fails the
+     box itself stays selected. Needs a provider with locateObject (+ key). */
+  async selectObjectByName(description) {
+    const p = this.ai.provider();
+    if (!this.ai.can('locateObject') || (p && typeof p.hasKey === 'function' && !p.hasKey())) {
+      return { status: 'error', reason: 'no_provider', message: 'Selecting by name needs an AI key (Gemini).' };
+    }
+    this.engine.captureFlat();
+    const flat = this.engine._flat;
+    if (!flat) return { status: 'error', reason: 'no_image' };
+    const k = Math.min(1, 1024 / Math.max(flat.width || this.W, flat.height || this.H));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round((flat.width || this.W) * k)); c.height = Math.max(1, Math.round((flat.height || this.H) * k));
+    c.getContext('2d').drawImage(flat, 0, 0, c.width, c.height);
+    const r = await this.ai.run('locateObject', c.toDataURL('image/jpeg', 0.85), description);
+    if (r.status !== 'ok') return r;
+    if (!r.result) return { status: 'error', reason: 'no_match', message: `Couldn't find ${description} in the image.` };
+    const bb = r.result, x = bb.x / 100 * this.W, y = bb.y / 100 * this.H, w = bb.width / 100 * this.W, h = bb.height / 100 * this.H;
+    this.selection = { kind: 'rect', x, y, w, h };
+    this._emit('selection', this.selection);
+    this.fc.renderAll();
+    if (w < 8 || h < 8) return { status: 'ok' };
+    const res = await this.selectObjectsInSelection();
+    if (res && res.status === 'error') { this.selection = { kind: 'rect', x, y, w, h }; this._emit('selection', this.selection); this.fc.renderAll(); }
+    return { status: 'ok' };
+  }
+  /* "Replace the dog with a dolphin": select `target` by name (skipped when empty — then the
+     current selection is used), then AI-generate `prompt` into it, clipped to the selection's
+     shape exactly like the "Fill the selection with AI" popover. */
+  async replaceObjectByName(target, prompt) {
+    if (!prompt) return { status: 'error', reason: 'no_prompt', message: 'Say what to put there.' };
+    if (target) {
+      const sel = await this.selectObjectByName(target);
+      if (sel.status !== 'ok') return sel;
+    } else if (!this.selection) {
+      return { status: 'error', reason: 'no_selection', message: 'Select something first, or say what to replace.' };
+    }
+    return this.aiInsertAt(prompt);
+  }
+
   async _objectsInSelection(polys, b) {
     this.engine.captureFlat();
     const flat = this.engine._flat;
@@ -2394,6 +2727,26 @@ export class Editor {
   /* ── history ──────────────────────────────────────────────────────────────────────────── */
   _bindModified() {
     this.fc.on('object:modified', (opt) => this._onModified(opt));
+    this.fc.on('object:moving', (opt) => this._altDupSpawn(opt && opt.target));
+    // Frame labels: click one to make that frame the working frame (view stays where it is).
+    this.fc.on('mouse:down', (opt) => {
+      if (this.tool !== 'select' || this._frames.length < 2 || !opt || !opt.e) return;
+      const sp = this.fc.getPointer(opt.e, true), hit = this._frameLabelAt(sp);
+      if (!hit) return;
+      this.fc._groupSelector = null;      // the marquee that mouse-down just began would be stale after the re-origin
+      this._frameDragStart(hit.id, sp);   // a plain click activates; a drag moves the frame (see _frameDragEnd)
+    });
+    this.fc.on('mouse:move', (opt) => { if (this._fdrag && opt && opt.e) this._frameDragMove(this.fc.getPointer(opt.e, true)); });
+    this.fc.on('mouse:up', () => { if (this._fdrag) this._frameDragEnd(); });
+    // Selecting (or dropping) a layer inside another frame makes that frame the working one — but
+    // only once the gesture ends, since re-origining mid-drag would shift the drag's anchor.
+    this.fc.on('mouse:up', () => {
+      if (this.tool !== 'select' || this._frames.length < 2 || this._drag || this._fdrag) return;
+      const a = this.fc.getActiveObject();
+      if (!a || a.type === 'activeSelection') return;
+      const fr = this._frameAt(a.getCenterPoint());
+      if (fr && fr.id !== this._frameActive) this.activateFrame(fr.id);
+    });
     this.fc.on('text:changed', () => this._soon());
   }
 
@@ -2436,11 +2789,17 @@ export class Editor {
     this._onSpaceDown = (e) => {
       if (e.code !== 'Space' && e.key !== ' ') return;
       if (isTyping()) return;
-      if (!this._spaceDown) { this._spaceDown = true; if (this.tool !== 'hand') this.fc.defaultCursor = 'grab'; }
+      if (!this._spaceDown) {
+        this._spaceDown = true; if (this.tool !== 'hand') this.fc.defaultCursor = 'grab';
+        // Fabric would also grab whatever object is under the pointer and drag it along with the
+        // pan (a selected layer slid off its spot) — no hit-testing while Space is held.
+        this._spaceSkipTarget = this.fc.skipTargetFind; this.fc.skipTargetFind = true;
+      }
       e.preventDefault();
     };
     this._onSpaceUp = (e) => {
       if (e.code !== 'Space' && e.key !== ' ') return;
+      if (this._spaceDown) this.fc.skipTargetFind = !!this._spaceSkipTarget;
       this._spaceDown = false;
       if (this.tool !== 'hand') this.fc.defaultCursor = this._cursorForTool(this.tool);
     };
@@ -2461,14 +2820,46 @@ export class Editor {
     document.addEventListener('keydown', this._onPickModifier);
     document.addEventListener('keyup', this._onPickModifier);
   }
+  // A web font that finishes loading after its text was laid out (its stylesheet arrived late, or
+  // the browser only fetched it on first use) re-measures every text layer — whoever set the font.
+  _bindFontWatch() {
+    if (typeof document === 'undefined' || !document.fonts || !document.fonts.addEventListener) return;
+    this._onFontsLoaded = () => { if (!this._destroyed) this.refreshFonts(); };
+    document.fonts.addEventListener('loadingdone', this._onFontsLoaded);
+  }
 
   /* Option/Alt+drag duplicate: mirrors the delta the object actually moved onto a fresh clone
      left at the drag's start position, so the object under the cursor stays "the one you grabbed"
      while a copy is dropped where it began — the usual Figma/design-tool convention. Only fires
      for a genuine drag (not a resize/rotate) on the same single object that was armed in _down. */
+  /* The copy appears the moment the drag really moves (Figma): the original follows the cursor
+     while a copy stays visible at the start position for the whole drag, instead of only popping
+     in on mouse-up. Fires from object:moving; _onModified then just commits. */
+  _altDupSpawn(target) {
+    const armed = this._altDup;
+    if (!armed || armed.spawned || !target || target.id !== armed.id) return;
+    if (target.left === armed.left && target.top === armed.top) return;   // not moved yet
+    armed.spawned = true;
+    target.clone(clone => {
+      clone.set({ id: uid(), name: (target.renamed ? target.name : layerLabel(target)) + ' copy', renamed: true,
+        left: armed.left, top: armed.top });
+      this.fc.add(clone);
+      this.fc.moveTo(clone, Math.max(0, this.fc.getObjects().indexOf(target)));
+      armed.clone = clone;
+      this.fc.requestRenderAll();
+    }, EXTRA);
+  }
   _onModified(opt) {
     const armed = this._altDup; this._altDup = null;
     const target = opt && opt.target;
+    if (armed && armed.spawned) {
+      // The copy is already on the canvas. If the drag ended back where it began, drop it again
+      // rather than leaving two stacked identical layers.
+      const c = armed.clone;
+      if (c && target && target.left === armed.left && target.top === armed.top) this.fc.remove(c);
+      this.commit(c && this.fc.getObjects().includes(c) ? 'duplicate-drag' : 'transform');
+      return;
+    }
     if (armed && target && target.id === armed.id && opt.transform && opt.transform.action === 'drag'
         && (target.left !== armed.left || target.top !== armed.top)) {
       target.clone(clone => {
@@ -2481,6 +2872,11 @@ export class Editor {
       }, EXTRA);
       return;
     }
+    // a generated edge feather is measured in layer pixels, so re-fit it after the layer is resized
+    if (target && target.edgeFeather > 0 && target.maskCanvas && target.type === 'image') {
+      const k = `${Math.round(target.getScaledWidth())}x${Math.round(target.getScaledHeight())}`;
+      if (target._featherSize !== k) { this._paintFeatherMask(target, target.edgeFeather); target._featherSize = k; const mf = (target.filters || []).find(x => x.type === 'MaskFilter'); if (mf) mf.maskCanvas = target.maskCanvas; target.applyFilters(); this.fc.renderAll(); }
+    }
     this.commit('transform');
   }
   _soon() { clearTimeout(this._st); this._st = setTimeout(() => this.commit('text-edit'), 350); }
@@ -2490,7 +2886,7 @@ export class Editor {
      any document edit (commit) starts a fresh run — the same model as Photoshop's history. Without
      it, ⌘Z after Expand/Contract/Deselect undid the last document edit instead (even "Open"). */
   _recordSelection(sel) {
-    const live = !!(this._drag && (this._drag.kind === 'sel' || this._drag.kind === 'resize-sel')) || !!this._polyBuild;
+    const live = !!(this._drag && (this._drag.kind === 'sel' || this._drag.kind === 'resize-sel' || this._drag.kind === 'sel-vertex')) || !!this._polyBuild;
     if (live) return;
     const snap = sel ? JSON.parse(JSON.stringify(sel)) : null;
     const last = this._selLast === undefined ? null : this._selLast;
@@ -2513,9 +2909,10 @@ export class Editor {
   get canUndoSelection() { return !!(this._selUndo && this._selUndo.length); }
   commit(label) {
     this._recomputeAdjustmentLayers();
+    this._syncHitAreas();
     this._selUndo = []; this._selRedo = [];   // a document edit starts a fresh selection run
     this._selLast = this.selection ? JSON.parse(JSON.stringify(this.selection)) : null;
-    if (this.history.push(this._withIsoRestored(() => serialize(this.fc, this.W, this.H)))) {
+    if (this.history.push(this._withIsoRestored(() => serialize(this.fc, this.W, this.H, this._frameMeta())))) {
       this._emit('history', this.history.depth());
       this._emit('change', { label });
     }
@@ -2535,7 +2932,7 @@ export class Editor {
     this._penAbandon();
     this._iso = [];
     const s = this.history.undo();
-    if (s) restore(this.fc, s, { engine: this.engine, history: this.history, onDone: (w, h) => { this._afterRestore(w, h); this._recomputeAdjustmentLayers(); this.fc.renderAll(); this._emit('history', this.history.depth()); this._emit('change', { label: 'undo' }); if (reEdit && this._byId(reEdit)) this.editPath(reEdit); if (reGrad) { const go = this._byId(reGrad); if (!go || !this._beginGradEdit(go)) this._endGradEdit(); } } });
+    if (s) restore(this.fc, s, { engine: this.engine, history: this.history, onDone: (w, h, meta) => { this._afterRestore(w, h, meta); this._recomputeAdjustmentLayers(); this.fc.renderAll(); this._emit('history', this.history.depth()); this._emit('change', { label: 'undo' }); if (reEdit && this._byId(reEdit)) this.editPath(reEdit); if (reGrad) { const go = this._byId(reGrad); if (!go || !this._beginGradEdit(go)) this._endGradEdit(); } } });
   }
   redo() {
     this._flushGradCommit();   // a pending stop edit is its own step — undo must see it
@@ -2552,9 +2949,31 @@ export class Editor {
     this._penAbandon();
     this._iso = [];
     const s = this.history.redo();
-    if (s) restore(this.fc, s, { engine: this.engine, history: this.history, onDone: (w, h) => { this._afterRestore(w, h); this._recomputeAdjustmentLayers(); this.fc.renderAll(); this._emit('history', this.history.depth()); this._emit('change', { label: 'redo' }); if (reEdit && this._byId(reEdit)) this.editPath(reEdit); if (reGrad) { const go = this._byId(reGrad); if (!go || !this._beginGradEdit(go)) this._endGradEdit(); } } });
+    if (s) restore(this.fc, s, { engine: this.engine, history: this.history, onDone: (w, h, meta) => { this._afterRestore(w, h, meta); this._recomputeAdjustmentLayers(); this.fc.renderAll(); this._emit('history', this.history.depth()); this._emit('change', { label: 'redo' }); if (reEdit && this._byId(reEdit)) this.editPath(reEdit); if (reGrad) { const go = this._byId(reGrad); if (!go || !this._beginGradEdit(go)) this._endGradEdit(); } } });
   }
-  _afterRestore(w, h) {
+  /* A shape with no visible fill (alpha 0, 'transparent', none, or its fill hidden) is clickable on
+     its painted border only, like Figma — otherwise its whole box sits over whatever is inside it:
+     the text in a dashed "USE CODE" outline couldn't be clicked or shift-selected at all. Not
+     serialised: it's re-derived from the fill on every commit and restore. */
+  _syncHitAreas() {
+    const invisible = (f) => !f || f === 'transparent' || (typeof f === 'string' && /^rgba?\([^)]*,\s*0(\.0+)?\s*\)$/.test(f.replace(/\s+/g, ' ')) && /rgba/.test(f));
+    this.fc.getObjects().forEach(o => {
+      if (o.type === 'image' || o.type === 'group' || o.type === 'i-text' || o.type === 'textbox' || o.type === 'text' || o.role === 'bg') return;
+      o.perPixelTargetFind = !!(o.fillOff || (invisible(o.fill) && typeof o.fill !== 'object'));
+    });
+  }
+  _afterRestore(w, h, meta) {
+    this._applyFrameMeta(meta);
+    // selectable/evented/lockMovement* aren't serialized, so a reload or undo brought a locked
+    // layer back draggable (and Shift-click on the canvas pulled it into a multi-selection).
+    const drawing = this.tool !== 'select';
+    this.fc.getObjects().forEach(o => {
+      o.selectable = !drawing && !o.locked; o.evented = !drawing && !o.locked;
+      if (o.locked) this._syncLockProps(o);
+    });
+    this._syncHitAreas();
+    this._ensureTextFonts();
+    this._relinkCutout();
     if (w === this.W && h === this.H) return;
     this.W = w; this.H = h;
     this._emit('resize', { width: w, height: h });
@@ -2580,6 +2999,7 @@ export class Editor {
       const kids = isContainerGroup(o) ? vkids(o) : null;
       return {
         id: o.id || (o.id = uid()), index: i, name: layerLabel(o), role: o.role || 'shape',
+        frameId: parent ? null : this._frameOf(o),
         visible: o.visible !== false, locked: !!o.locked, opacity: o.opacity != null ? o.opacity : 1,
         blend: o.globalCompositeOperation || 'source-over',
         active: active === o,
@@ -2629,6 +3049,22 @@ export class Editor {
      layers() reports members at their real place. The one visible difference while editing is
      z-order — the lifted member draws above its group's other members until it's put back. */
   _isoEntry(o) { return (this._iso || []).find(e => e.obj === o) || null; }
+  /* The group/sticker the active layer was entered from by double-click (null when not inside one):
+     panels say so, since W/X/Y and Fill then act on that one part, not the whole sticker. */
+  isolationParent() {
+    const a = this.fc.getActiveObject(); const e = a && this._isoEntry(a);
+    return e ? { id: e.parent.id, name: layerLabel(e.parent) } : null;
+  }
+  /* Leave the group/sticker being edited inside and select it whole (the panels' "Done"). */
+  exitIsolation() {
+    const e = this._iso[0]; if (!e) return;
+    const g = e.parent;
+    this.fc.discardActiveObject();
+    this._exitIsolation();
+    if (this.fc.getObjects().includes(g)) this.fc.setActiveObject(g);
+    this.fc.renderAll();
+    this._emit('change', { label: 'activate' });
+  }
   _isoKids(g) {
     const kids = g.getObjects().slice();
     for (const e of this._iso || []) if (e.parent === g && !kids.includes(e.obj)) kids.splice(Math.min(e.index, kids.length), 0, e.obj);
@@ -2701,11 +3137,19 @@ export class Editor {
     this.fc.on('mouse:dblclick', (opt) => {
       if (this.tool !== 'select') return;
       const t = opt.target;
-      if (!t || !isContainerGroup(t) || t.locked) return;
-      const m = this._memberAt(t, this.fc.getPointer(opt.e));
+      if (!t || t.locked) return;
+      /* A baked-text sticker is one layer, but its label is ordinary text you retype: double-click
+         drops straight into editing it (the same lift a group member gets, put back on deselect).
+         Without this, the double-click did nothing and the typing that followed fired tool
+         shortcuts — "BAGS" switched to the brush, the wand, the bucket and the clone stamp. */
+      const sticker = t.type === 'group' && t.role === 'shape';
+      if (t.type === 'group' && AD_FACTORIES[t.role]) { this._editAdText(t, this.fc.getPointer(opt.e)); return; }
+      if (!isContainerGroup(t) && !sticker) return;
+      const m = sticker ? t.getObjects().find(k => k.type === 'i-text' || k.type === 'textbox') : this._memberAt(t, this.fc.getPointer(opt.e));
       if (!m) return;
       this._enterMember(m);
       this.fc.setActiveObject(m);
+      if (sticker && m.enterEditing) { m.enterEditing(); m.selectAll(); }
       this.fc.requestRenderAll();
       this._emit('change', { label: 'activate' });
     });
@@ -2731,6 +3175,67 @@ export class Editor {
     ['selection:created', 'selection:updated', 'selection:cleared'].forEach(ev => this.fc.on(ev, onSel));
   }
   _byId(id) { return this.fc.getObjects().find(o => o.id === id); }
+
+  /* CTA / badge / price / brand are built by adtext.js factories out of plain (non-editable) text,
+     so their copy couldn't be changed at all — a price inserted as $29 stayed $29. Double-click one:
+     an editable copy of the text under the pointer opens exactly over it (never saved —
+     excludeFromExport), and on leaving it the element is rebuilt through its own factory with the
+     new value, so a pill resizes and a price re-flows. One undo step. */
+  _editAdText(g, p) {
+    const field = (k) => k && typeof k.text === 'string' && k.text !== '→' && !(g.role === 'brand' && k !== g._objects[g._objects.length - 1]);
+    const hit = this._memberAt(g, p);
+    const child = field(hit) ? hit : g._objects.find(field);
+    if (!child) return;
+    const f = this.fabric, d = f.util.qrDecompose(child.calcTransformMatrix());
+    const it = new f.IText(child.text, {
+      fontFamily: child.fontFamily, fontWeight: child.fontWeight, fontStyle: child.fontStyle, fontSize: child.fontSize,
+      fill: child.fill, charSpacing: child.charSpacing, linethrough: child.linethrough,
+      left: d.translateX, top: d.translateY, originX: 'center', originY: 'center', angle: d.angle, scaleX: d.scaleX, scaleY: d.scaleY,
+    });
+    it.set({ id: uid(), excludeFromExport: true });
+    it._adEdit = { groupId: g.id, index: g._objects.indexOf(child) };
+    child.visible = false; g.dirty = true;
+    this.fc.add(it);
+    this.fc.setActiveObject(it);
+    it.enterEditing(); it.selectAll();
+    it.on('editing:exited', () => this._finishAdEdit(it));
+    this.fc.requestRenderAll();
+  }
+  _finishAdEdit(it) {
+    const e = it._adEdit; if (!e) return; it._adEdit = null;
+    this.fc.remove(it);
+    const g = this._byId(e.groupId); if (!g) return;
+    const child = g._objects[e.index];
+    if (child) child.visible = true;
+    g.dirty = true;
+    const text = it.text;
+    if (!child || !text.trim() || text === child.text) { this.fc.setActiveObject(g); this.fc.requestRenderAll(); return; }
+    const key = child.adField || (g.role === 'price' ? (child.linethrough ? 'original' : e.index === 0 ? 'current' : 'save') : 'text');
+    const ng = this._rebuildAd(g, { [key]: text });
+    this.fc.setActiveObject(ng);
+    this.fc.requestRenderAll();
+    this.commit('ad-text');
+  }
+  /* Rebuilds a CTA/badge/price/brand through its factory with `patch` over its options, in the
+     same place (left/top anchored — it grows rightward, like typing) with the same transform and
+     id. Returns the new group; the caller commits. */
+  _rebuildAd(g, patch) {
+    const opts = { ...deriveAdOpts(g), ...(g.adOpts || {}), ...patch };
+    const ng = AD_FACTORIES[g.role](this.fabric, { x: 0, y: 0 }, opts);
+    ng.set({ left: g.left, top: g.top, scaleX: g.scaleX, scaleY: g.scaleY, angle: g.angle, opacity: g.opacity, shadow: g.shadow,
+      globalCompositeOperation: g.globalCompositeOperation, visible: g.visible, id: g.id, name: g.name, renamed: g.renamed, locked: g.locked });
+    ng.adOpts = opts;
+    // the group's own fill mirrors its colour for the panels — set BEFORE it becomes active, since
+    // setActiveObject fires the selection events a shell reads the panel from
+    ng.set('fill', (g.role === 'brand' ? opts.color : opts.fill) || g.fill);
+    const idx = this.fc.getObjects().indexOf(g);
+    const wasActive = this.fc.getActiveObject() === g;
+    this.fc.remove(g);
+    this.fc.insertAt(ng, idx, false);
+    ng.setCoords();
+    if (wasActive) this.fc.setActiveObject(ng);
+    return ng;
+  }
   setLayer(id, patch, { live = false } = {}) {
     const o = this._findLayer(id); if (!o) return;
     if ('visible' in patch) o.visible = patch.visible;
@@ -2882,6 +3387,31 @@ export class Editor {
     this._emit('change', { label: 'activate' });
   }
 
+  /* Shift-click in a layers panel: select every layer from the anchor (the layer selected before,
+     or where the last range started) through `id`, in stacking order — Figma/Photoshop's range
+     pick. Background, locked and hidden layers are skipped, as on the canvas. With nothing
+     selected it just selects `id`. Cmd/Ctrl-click stays toggleLayerSelection. */
+  selectLayerRange(id) {
+    this._exitIsolation();
+    let o = this._findLayer(id); if (!o) return;
+    o = this._rootLayer(o);
+    const cur = this.fc.getActiveObject();
+    const members = !cur ? [] : cur.type === 'activeSelection' ? cur.getObjects().map(x => this._rootLayer(x)) : [this._rootLayer(cur)];
+    let from = members.length === 1 ? members[0] : (this._rangeAnchor && members.includes(this._rangeAnchor) ? this._rangeAnchor : members[0]);
+    if (!from) { if (o.role !== 'bg' && !o.locked) this.activate(o.id); return; }
+    this._rangeAnchor = from;
+    const all = this.fc.getObjects();
+    const [i0, i1] = [all.indexOf(from), all.indexOf(o)].sort((a, b) => a - b);
+    if (i0 < 0) return;
+    const picked = all.slice(i0, i1 + 1).filter(x => x.role !== 'bg' && x.role !== 'adjustment' && !x.locked && x.visible !== false && !x.excludeFromExport && x.role !== 'draft');
+    if (this.tool !== 'select') this.setTool('select');
+    this.fc.discardActiveObject();
+    if (picked.length === 1) this.fc.setActiveObject(picked[0]);
+    else if (picked.length > 1) this.fc.setActiveObject(new this.fabric.ActiveSelection(picked, { canvas: this.fc }));
+    this.fc.renderAll();
+    this._emit('change', { label: 'activate' });
+  }
+
   duplicateLayer(id, offset = 12) {
     const o = this._byId(id); if (!o) return;   // top-level only: a member's coords are group-relative
     return new Promise(resolve => {
@@ -2909,9 +3439,29 @@ export class Editor {
     });
   }
 
+  /* ⌘C / ⌘X with a marquee/lasso/wand selection: the selected PIXELS of the layer being worked on
+     go on the clipboard (Photoshop's Copy), not the layer object — closing a lasso leaves no active
+     object, so the object-only path silently did nothing. Pasted in place first, then fanned out. */
+  copySelectedPixels() {
+    const src = this._pixelSourceLayer();
+    if (!src || !this.selection) return false;
+    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H, undefined, { density: this._copyDensity(src, this.selection) });
+    if (!r) return false;
+    this._clipboard = this._selectionCopyImage(src, r, { name: src.name || layerLabel(src), renamed: true });
+    this._pasteCount = -1;   // the first paste lands exactly where the pixels came from
+    return true;
+  }
+  cutSelectedPixels() {
+    if (!this.copySelectedPixels()) return false;
+    this.cutSelectionFromLayer();
+    return true;
+  }
+
   pasteClipboard(offset = 12) {
     const src = this._clipboard;
     if (!src) return;
+    // A live marquee would otherwise be lifted out of the pasted layer by the next V (see ⌘J).
+    if (this.selection) this.clearSelection();
     this._pasteCount = (this._pasteCount || 0) + 1;
     const d = offset * this._pasteCount;
     return new Promise(resolve => {
@@ -2947,7 +3497,7 @@ export class Editor {
   _layersAt(pt) {
     const F = this.fabric, P = new F.Point(pt.x, pt.y);
     return this.fc.getObjects().slice().reverse().filter(o => {
-      if (o.visible === false || o.excludeFromExport || o.role === 'draft') return false;
+      if (o.visible === false || o.excludeFromExport || o.role === 'draft' || o.role === 'adjustment') return false;
       if (!o.aCoords) o.setCoords();
       // Members of a multi-selection keep coordinates relative to it — test in that space.
       const q = o.group ? F.util.transformPoint(P, F.util.invertTransform(o.group.calcTransformMatrix())) : P;
@@ -3152,6 +3702,7 @@ export class Editor {
   /* The off-canvas mask's fill colour (see the constructor) — a host should call this whenever
      its own stage background changes (e.g. a light/dark theme toggle) so the mask keeps matching
      the surrounding chrome instead of showing a mismatched patch around the artboard. */
+  setAccent(color) { this.accent = color || '#4f8ff0'; this.fc.requestRenderAll(); }
   setVoidColor(color) {
     this._voidColor = color;
     this.fc.requestRenderAll();
@@ -3243,6 +3794,7 @@ export class Editor {
     this.fc.on('object:modified', (opt) => { if (opt.target) this._normalizeCorners(opt.target); });
   }
   cornerRadiusOf(o) {
+    if (o && o.type === 'image') return o.cornerRadius || 0;
     if (!o || o.type !== 'rect') return 0;
     if (o.cornerRadius != null) return o.cornerRadius;
     const m = this.fabric.util.qrDecompose(o.calcTransformMatrix());
@@ -3252,6 +3804,7 @@ export class Editor {
   }
   _normalizeCorners(o) {
     if (o.type === 'group' || o.type === 'activeSelection') { (o._objects || []).forEach(c => this._normalizeCorners(c)); return; }
+    if (o.type === 'image') { this._roundImageCorners(o); return; }
     if (o.type !== 'rect' || (!o.rx && !o.ry && !o.cornerRadius)) return;
     const R = this.cornerRadiusOf(o);
     if (o.cornerRadius == null) o.cornerRadius = R;
@@ -3263,6 +3816,27 @@ export class Editor {
     if (o.group) o.group.dirty = true;
   }
 
+  /* Rounded corners on an image: a rounded-rect clipPath (role 'corner') in the image's own
+     centre-origin frame, its rx/ry divided by the scale so the radius stays `cornerRadius` scene px
+     however the image is scaled or cropped. Never replaces some other clip (clip-to-selection). */
+  _roundImageCorners(o) {
+    const cur = o.clipPath;
+    if (cur && cur.role !== 'corner') return;
+    const R = o.cornerRadius || 0;
+    if (!R) { if (cur) { o.clipPath = null; o.dirty = true; } return; }
+    const m = this.fabric.util.qrDecompose(o.calcTransformMatrix());
+    const sx = Math.abs(m.scaleX) || 1, sy = Math.abs(m.scaleY) || 1;
+    const r = Math.min(R, (o.width * sx) / 2, (o.height * sy) / 2);
+    const clip = cur || new this.fabric.Rect({ originX: 'center', originY: 'center', left: 0, top: 0, strokeWidth: 0, fill: '#000' });
+    // The border is centred on the image's edge, so half of it lies OUTSIDE the box. The clip grows by that half
+    // (and its corner radius with it) so the border is neither cut off nor thinned to its inner half.
+    const sw = o.stroke && o.strokeWidth && !o.strokeOff ? o.strokeWidth : 0;
+    clip.set({ width: o.width + sw, height: o.height + sw, rx: r / sx + sw / 2, ry: r / sy + sw / 2 });
+    clip.role = 'corner';
+    o.clipPath = clip;
+    o.dirty = true;
+  }
+
   /* Shift+drag a side handle (mr/ml/mt/mb — normally single-axis) keeps the object's aspect
      ratio, mirroring the corner handles' own uniform-scale-on-Shift behaviour. Fabric only wires
      that convention to the corners natively, so side handles need it applied by hand here: on
@@ -3270,6 +3844,17 @@ export class Editor {
      handle doesn't drive is recomputed from the one it does, using the ratio the object had when
      the drag started (not a hardcoded 1:1), so a non-square shape keeps its own proportions. */
   _bindProportionalSideScale() {
+    // Photos and text keep their proportions on a corner drag (Shift frees them), as in Canva and
+    // Photoshop — a quick resize must not squash a photo or a headline. Shapes keep Figma's free
+    // corners. Fabric reads uniformScaling per scaling tick, so set it as each transform starts.
+    this.fc.on('before:transform', (opt) => {
+      const t = opt.transform && opt.transform.target;
+      // ...and stickers / ad copy (CTA, badge, price, brand), which are groups with text inside.
+      const keep = (o) => !!o && (o.type === 'image' || /text/.test(o.type)
+        || (o.type === 'group' && (o.role === 'shape' || !!AD_FACTORIES[o.role]))
+        || (o.type === 'activeSelection' && o.getObjects().length > 0 && o.getObjects().every(keep)));
+      this.fc.uniformScaling = keep(t);
+    });
     this.fc.on('object:scaling', (opt) => {
       const corner = opt.transform && opt.transform.corner;
       const sideX = corner === 'ml' || corner === 'mr';   // drives scaleX only
@@ -3301,8 +3886,29 @@ export class Editor {
     const last = this._lastActiveId && this._byId(this._lastActiveId);
     if (last) return last;
     const objs = this.fc.getObjects();
-    for (let i = objs.length - 1; i >= 0; i--) { if (objs[i].type === 'image' || objs[i].role === 'paint') return objs[i]; }
+    for (let i = objs.length - 1; i >= 0; i--) { const o = objs[i]; if ((o.type === 'image' || o.role === 'paint') && o.role !== 'adjustment' && o.visible !== false) return o; }
     return null;
+  }
+
+  /* Pixels per scene px a selection copy of `src` should keep: a photo drawn at 0.56× has ~1.8× the
+     detail on file, and lifting it at screen size would throw that away (blurry once enlarged).
+     Capped so a huge photo shrunk to a thumbnail can't make a giant canvas. Non-images: 1. */
+  _copyDensity(src, sel) {
+    if (!src || src.type !== 'image') return 1;
+    const m = this.fabric.util.qrDecompose(src.calcTransformMatrix());
+    const k = 1 / Math.max(1e-6, Math.min(Math.abs(m.scaleX), Math.abs(m.scaleY)));
+    if (!(k > 1.01)) return 1;
+    const b = sel && !sel.invert ? selectionBounds(sel, this.W, this.H) : { w: this.W, h: this.H };
+    const maxK = Math.sqrt(16e6 / Math.max(1, b.w * b.h));
+    return Math.max(1, Math.min(k, 4, maxK));
+  }
+  // The layer a selection copy becomes: scene-sized however dense its pixels, and a photo's copy is
+  // still a photo (role 'image'), not a brush layer.
+  _selectionCopyImage(src, r, props) {
+    const k = r.density || 1;
+    const img = new this.fabric.Image(r.canvas, { left: r.box.x, top: r.box.y, originX: 'left', originY: 'top', scaleX: 1 / k, scaleY: 1 / k, selectable: true, evented: true });
+    img.set({ id: uid(), role: src.type === 'image' && src.role !== 'paint' ? 'image' : 'paint', ...props });
+    return img;
   }
 
   /* Cmd+J: copy the selected pixels of the active layer into a new layer, non-destructively
@@ -3310,13 +3916,16 @@ export class Editor {
   duplicateSelectionToLayer() {
     const src = this._pixelSourceLayer();
     if (!src || !this.selection) return null;
-    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H);
+    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H, undefined, { density: this._copyDensity(src, this.selection) });
     if (!r) return null;
-    const img = new this.fabric.Image(r.canvas, { left: r.box.x, top: r.box.y, originX: 'left', originY: 'top', selectable: true, evented: true });
-    img.set({ id: uid(), role: 'paint', name: (src.name || src.role || 'Layer') + ' copy' });
+    const img = this._selectionCopyImage(src, r, { name: (src.name || src.role || 'Layer') + ' copy' });
     const idx = this.fc.getObjects().indexOf(src);
     this.fc.add(img);
     if (idx !== -1) { this.fc.remove(img); this.fc.insertAt(img, idx + 1, false); }
+    // Deselect, as Photoshop's Layer via Copy does (and lift/recolour here do): left live, picking
+    // the Move tool next to grab the new layer would lift the SAME pixels again (setTool → lift),
+    // hollowing the copy out and stacking a second "(moved)" layer on it.
+    this.clearSelection();
     this.fc.setActiveObject(img);
     this.fc.renderAll();
     this.commit('copy-selection');
@@ -3330,10 +3939,9 @@ export class Editor {
   liftSelectionToLayer() {
     const src = this._pixelSourceLayer();
     if (!src || !this.selection) return null;
-    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H);
+    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H, undefined, { density: this._copyDensity(src, this.selection) });
     if (!r) return null;
-    const floatImg = new this.fabric.Image(r.canvas, { left: r.box.x, top: r.box.y, originX: 'left', originY: 'top', selectable: true, evented: true });
-    floatImg.set({ id: uid(), role: 'paint', name: (src.name || src.role || 'Layer') + ' (moved)' });
+    const floatImg = this._selectionCopyImage(src, r, { name: (src.name || src.role || 'Layer') + ' (moved)' });
     const clip = selectionClipObject(this.fabric, this.selection);
     if (clip) { clip.absolutePositioned = true; clip.inverted = !this.selection.invert; src.clipPath = clip; src.dirty = true; }
     const idx = this.fc.getObjects().indexOf(src);
@@ -3355,9 +3963,43 @@ export class Editor {
     const o = this.fc.getActiveObject() || (this._lastActiveId && this._byId(this._lastActiveId));
     if (!o) return;
     if (!this.selection) { this.fc.remove(o); this.fc.discardActiveObject(); this.commit('remove'); return; }
+    if (this.selection.feather > 0 && o.type === 'image' && !this._isVectorMasked(o)) return this._softCut(o);
     const clip = selectionClipObject(this.fabric, this.selection);
     if (clip) { clip.absolutePositioned = true; clip.inverted = !this.selection.invert; o.clipPath = clip; o.dirty = true; }
     this.fc.renderAll();
+    this.commit('cut-selection');
+  }
+
+  /* Delete with a FEATHERED selection: the selected area fades out instead of being cut with a hard
+     edge. Done on the layer's mask (so it stays non-destructive and undoable): the feathered selection
+     shape is painted black into the mask, mapped through the layer's transform. */
+  _softCut(o) {
+    const F = this.fabric, sel = this.selection, f = sel.feather;
+    if (!o.maskCanvas) {
+      o.maskCanvas = createMaskCanvas(this.W, this.H); o.maskEnabled = true;
+      const fs = o.filters || [], gi = fs.findIndex(x => x.type === 'Geometry');
+      o.filters = [...fs.slice(0, gi + 1), new (makeMaskFilterClass(F))({ maskCanvas: o.maskCanvas }), ...fs.slice(gi + 1)];
+    }
+    const mc = o.maskCanvas, ctx = mc.getContext('2d');
+    const el = o._originalElement || o._element;
+    const ew = (el && (el.naturalWidth || el.width)) || o.width || 1, eh = (el && (el.naturalHeight || el.height)) || o.height || 1;
+    const kx = mc.width / ew, ky = mc.height / eh;
+    const m = o.calcTransformMatrix(), inv = F.util.invertTransform(m);
+    const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])) || 1;
+    // an untouched (transparent) mask means "visible": make that explicit before darkening part of it
+    const flat = document.createElement('canvas'); flat.width = mc.width; flat.height = mc.height;
+    const fx = flat.getContext('2d'); fx.fillStyle = '#fff'; fx.fillRect(0, 0, flat.width, flat.height); fx.drawImage(mc, 0, 0);
+    ctx.clearRect(0, 0, mc.width, mc.height); ctx.drawImage(flat, 0, 0);
+    ctx.save();
+    // artboard px -> layer-local -> element px -> mask px
+    ctx.setTransform(...F.util.multiplyTransformMatrices([kx, 0, 0, ky, ((o.width || ew) / 2 + (o.cropX || 0)) * kx, ((o.height || eh) / 2 + (o.cropY || 0)) * ky], inv));
+    ctx.filter = `blur(${Math.max(0.5, (f / 2) / scale * Math.sqrt(kx * ky))}px)`;
+    ctx.fillStyle = '#000';
+    ctx.fill(selectionToPath2D(sel, this.W, this.H), selectionFillRule(sel));
+    ctx.restore();
+    const mf = (o.filters || []).find(x => x.type === 'MaskFilter'); if (mf) mf.maskCanvas = mc;
+    o.edgeFeather = 0;
+    o.applyFilters(); this.fc.renderAll();
     this.commit('cut-selection');
   }
 
@@ -3400,14 +4042,13 @@ export class Editor {
   recolorSelection(hex) {
     const src = this._pixelSourceLayer();
     if (!src || !this.selection) return null;
-    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H);
+    const r = renderSelectedPixels(this.fabric, src, this.selection, this.W, this.H, undefined, { density: this._copyDensity(src, this.selection) });
     if (!r) return null;
     const ctx = r.canvas.getContext('2d');
     const idata = ctx.getImageData(0, 0, r.canvas.width, r.canvas.height);
     recolorPixels(idata.data, hex);
     ctx.putImageData(idata, 0, 0);
-    const img = new this.fabric.Image(r.canvas, { left: r.box.x, top: r.box.y, originX: 'left', originY: 'top' });
-    img.set({ id: uid(), role: 'paint', name: 'Recolor' });
+    const img = this._selectionCopyImage(src, r, { name: 'Recolor' });
     const idx = this.fc.getObjects().indexOf(src);
     this.fc.add(img);
     if (idx !== -1) { this.fc.remove(img); this.fc.insertAt(img, idx + 1, false); }
@@ -3455,10 +4096,16 @@ export class Editor {
      the tone + fx adjustments. Rebuilt from o.geom / o.fx on every edit, then re-applied. */
   _rebuildImageFilters(o) {
     const maskFilter = (o.filters || []).find(f => f.type === 'MaskFilter');
+    const fx = fxToFilterSpecs(o.fx || FX_DEFAULTS).map(({ type, params }) => new this.fabric.Image.filters[type](params));
+    /* Fabric's Blur does not preserve alpha: it turns every transparent pixel opaque. With the mask
+       before it (the usual spot — right after Geometry), blurring a cut-out layer brought its whole
+       rectangle back. So when there is a blur the mask goes last and has the final say on alpha. */
+    const maskLast = !!maskFilter && fx.some(f => f.type === 'Blur');
     o.filters = [
       new this.fabric.Image.filters.Geometry({ ...GEOMETRY_DEFAULTS, ...(o.geom || {}) }),
-      ...(maskFilter ? [maskFilter] : []),
-      ...fxToFilterSpecs(o.fx || FX_DEFAULTS).map(({ type, params }) => new this.fabric.Image.filters[type](params)),
+      ...(maskFilter && !maskLast ? [maskFilter] : []),
+      ...fx,
+      ...(maskFilter && maskLast ? [maskFilter] : []),
     ];
     o.applyFilters();
   }
@@ -3633,6 +4280,21 @@ export class Editor {
     return null;
   }
 
+  /* Where an element lands when the user didn't aim it (Add element / Ad copy / Stickers buttons):
+     the artboard centre — then stepping down-right past anything already centred there, so
+     clicking CTA, Badge, Price in a row lays them out as a cascade instead of piling every one on
+     the same point into an unreadable blob. */
+  nextSpot() {
+    const near = 10, dx = this.W * 0.02, dy = this.H * 0.085;   // mostly down: ad elements are wide pills
+    const centres = this.fc.getObjects().filter(o => o.role !== 'bg').map(o => o.getCenterPoint());
+    for (let n = 0; n < 8; n++) {
+      const p = { x: this.W / 2 + n * dx, y: this.H / 2 + n * dy };
+      if (p.y > this.H * 0.9) break;
+      if (!centres.some(c => Math.abs(c.x - p.x) < near && Math.abs(c.y - p.y) < near)) return p;
+    }
+    return { x: this.W / 2, y: this.H / 2 };
+  }
+
   /* Decorative sticker: a recolorable vector shape from the built-in library (stickers.js), added
      centered at `pt` (default: artboard center) at a fixed 160px nominal size — same size/role
      convention as makeShape(), so it behaves exactly like any other vector shape layer (Fill
@@ -3644,7 +4306,7 @@ export class Editor {
      so renaming the sticker's own promo copy needs no dedicated UI. */
   addSticker(key, pt, size = 160) {
     const spec = stickerSpec(key); if (!spec) return null;
-    const center = pt || { x: this.W / 2, y: this.H / 2 };
+    const center = pt || this.nextSpot();
     const fill = STICKER_PALETTE[0];
     const common = { originX: 'center', originY: 'center', left: center.x, top: center.y, scaleX: size / 100, scaleY: size / 100 };
     let obj = null;
@@ -3663,9 +4325,29 @@ export class Editor {
     }
     if (!obj) return null;
     obj.set({ id: uid(), role: 'shape', name: 'Sticker' });
+    if (spec.kind === 'group') obj.set('fill', fill);   // mirrors the base shape — see _applyFill
     this.fc.add(obj);
     this.fc.setActiveObject(obj);
     this.commit('sticker');
+    return obj.id;
+  }
+
+  /* Library icon (icons.js, Iconify ids like "mdi:heart"): fetched as SVG and added as a vector
+     layer — a single Path, or a Group of paths for multi-part icons — scaled so its longer side is
+     `size` px and centred at `pt`. role 'shape', so Fill recolours it like any sticker. Resolves to
+     the new layer id, or null if the SVG had nothing drawable; rejects on a network failure. */
+  async addIcon(id, pt, size = 160) {
+    const svg = await fetchIconSVG(id, STICKER_PALETTE[0]);
+    const obj = await new Promise(resolve => {
+      this.fabric.loadSVGFromString(svg, (objs, opts) => resolve(objs && objs.length ? this.fabric.util.groupSVGElements(objs, opts) : null));
+    });
+    if (!obj) return null;
+    const center = pt || this.nextSpot();
+    const k = size / Math.max(obj.width || 1, obj.height || 1);
+    obj.set({ originX: 'center', originY: 'center', left: center.x, top: center.y, scaleX: k, scaleY: k, id: uid(), role: 'shape', name: 'Icon: ' + id.split(':')[1].replace(/-/g, ' ') });
+    this.fc.add(obj);
+    this.fc.setActiveObject(obj);
+    this.commit('icon');
     return obj.id;
   }
 
@@ -3679,10 +4361,40 @@ export class Editor {
   addBadge(pt, opts = {}) { return this._addAdText(makeBadge, pt, opts, 'badge'); }
   addPrice(pt, opts = {}) { return this._addAdText(makePrice, pt, opts, 'price'); }
   addBrandLockup(pt, opts = {}) { return this._addAdText(makeBrandLockup, pt, opts, 'brand'); }
+  /* Is the flattened artwork around `pt` mostly light? (true / false, or null when it can't be
+     read — e.g. a cross-origin image has tainted the canvas.) Samples a wide, short strip, the
+     shape of the text that's about to be placed there. */
+  _backdropIsLight(pt, w = 360, h = 60) {
+    try {
+      const cv = renderObjectsFlat(this.fc, this.W, this.H, this.fc.getObjects());
+      const x = Math.max(0, Math.round(pt.x - w / 2)), y = Math.max(0, Math.round(pt.y - h / 2));
+      const sw = Math.min(w, this.W - x), sh = Math.min(h, this.H - y);
+      if (sw < 1 || sh < 1) return null;
+      const d = cv.getContext('2d').getImageData(x, y, sw, sh).data;
+      let sum = 0, n = 0;
+      for (let i = 0; i < d.length; i += 16) { if (d[i + 3] < 8) continue; sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; n++; }
+      return n ? sum / n / 255 > 0.58 : null;
+    } catch (e) { return null; }
+  }
   _addAdText(factory, pt, opts, label) {
-    const center = pt || { x: this.W / 2, y: this.H / 2 };
-    const o = factory(this.fabric, center, { ...this.toolOpts, ...opts });
+    const center = pt || this.nextSpot();
+    const all = { ...this.toolOpts, ...opts };
+    // A price tag has three inks (current / struck-through / savings). The defaults assume one kind
+    // of backdrop (lime savings text vanishes on a light photo, black price on a dark one), so
+    // unless the caller chose colours, pick a set that reads on whatever it lands on.
+    if (label === 'price') {
+      const light = this._backdropIsLight(center);
+      if (light != null) {
+        const ink = light ? { fill: '#111114', originalInk: '#5b5a55', accent: '#0a6b3a' } : { fill: '#ffffff', originalInk: '#c9c7bd', accent: '#d4ff45' };
+        if (opts.fill == null && opts.color == null) all.fill = ink.fill;
+        if (opts.accent == null) all.accent = ink.accent;
+        if (opts.originalInk == null) all.originalInk = ink.originalInk;
+      }
+    }
+    const o = factory(this.fabric, center, all);
     if (!o) return null;
+    // what it was built from, so editing one of its texts can rebuild it (see _finishAdEdit)
+    o.adOpts = {}; AD_OPT_KEYS.forEach(k => { if (all[k] != null && typeof all[k] !== 'object') o.adOpts[k] = all[k]; });
     this.fc.add(o);
     this.fc.setActiveObject(o);
     this.commit(label);
@@ -3737,6 +4449,11 @@ export class Editor {
     const objs = this.fc.getObjects();
     objs.forEach((o, i) => {
       if (o.role !== 'adjustment') return;
+      // It's a filtered copy of the artboard, so it only makes sense sitting exactly on it: an
+      // arrow-key nudge or a drag shifted that copy and the whole design looked moved, with a
+      // strip of the unadjusted page showing along one edge.
+      o.set({ left: 0, top: 0, originX: 'left', originY: 'top', scaleX: 1, scaleY: 1, angle: 0, skewX: 0, skewY: 0, flipX: false, flipY: false,
+        lockMovementX: true, lockMovementY: true, lockScalingX: true, lockScalingY: true, lockRotation: true, hasControls: false });
       const below = objs.slice(0, i);
       const flat = renderObjectsFlat(this.fc, this.W, this.H, below);
       const filters = fxToFilterSpecs(o.adj || FX_DEFAULTS).map(({ type, params }) => new this.fabric.Image.filters[type](params));
@@ -3807,6 +4524,87 @@ export class Editor {
     if (from) { const b = vectorMaskPoint(this.fabric, layer, from, opts.size || 20); maskLine(ctx, b, a, o2, erase); }
     else maskStamp(ctx, a.x, a.y, o2, erase);
   }
+  /* Lays a gradient over the whole mask: white (reveal) at `from` -> black (hide) at `to`, or the
+     reverse. Both ends are mapped into the mask's own pixels the same way a brush stroke is, so it is
+     right for rotated/scaled/cropped images and for vector layers. `snap` is the mask as it was before
+     the gesture; it is restored first so repeated calls re-aim instead of accumulating. */
+  _paintMaskGradient(layer, snap, from, to, { reverse = false, radial = false, multiply = false } = {}) {
+    const mc = layer.maskCanvas, ctx = mc.getContext('2d');
+    const map = (p) => this._isVectorMasked(layer) ? vectorMaskPoint(this.fabric, layer, p, 1) : this._imageMaskPoint(layer, p, 1);
+    const a = map(from), b = map(to);
+    ctx.save();
+    ctx.globalCompositeOperation = 'copy'; ctx.drawImage(snap, 0, 0); ctx.globalAlpha = 1;
+    // 'multiply' intersects with what is already in the mask (two edge feathers on one layer);
+    // otherwise the gradient replaces the mask, as Photoshop's does
+    ctx.globalCompositeOperation = multiply ? 'multiply' : 'source-over';
+    let g;
+    if (radial) { const r = Math.hypot(b.x - a.x, b.y - a.y) || 1; g = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, r); }
+    else g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+    g.addColorStop(0, reverse ? '#000000' : '#ffffff'); g.addColorStop(1, reverse ? '#ffffff' : '#000000');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, mc.width, mc.height);
+    ctx.restore();
+  }
+  /* Sources for the blend picker's thumbnails: the selected layer on its own, and the page flattened BELOW it, both
+     cropped to the layer's bounds (null `below` when nothing is under it). Square-ish canvases ≤ `size` px. */
+  blendPreview(id, size = 96) {
+    const o = this._byId(id); if (!o || o.group) return null;
+    const objs = this.fc.getObjects(), i = objs.indexOf(o); if (i < 0) return null;
+    const b = o.getBoundingRect(true), x0 = Math.max(0, Math.floor(b.left)), y0 = Math.max(0, Math.floor(b.top)), x1 = Math.min(this.W, Math.ceil(b.left + b.width)), y1 = Math.min(this.H, Math.ceil(b.top + b.height));
+    if (x1 - x0 < 2 || y1 - y0 < 2) return null;
+    const crop = (flat) => { const c = document.createElement('canvas'), k = Math.min(1, size / Math.max(x1 - x0, y1 - y0)); c.width = Math.max(1, Math.round((x1 - x0) * k)); c.height = Math.max(1, Math.round((y1 - y0) * k)); c.getContext('2d').drawImage(flat, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height); return c; };
+    const keep = o.globalCompositeOperation; o.globalCompositeOperation = 'source-over';
+    let top; try { top = crop(renderObjectsFlat(this.fc, this.W, this.H, [o])); } finally { o.globalCompositeOperation = keep; }
+    const underObjs = objs.slice(0, i).filter(q => q.visible !== false && q.role !== 'adjustment');
+    let below = null;
+    if (underObjs.length) { below = crop(renderObjectsFlat(this.fc, this.W, this.H, underObjs)); const d = below.getContext('2d').getImageData(0, 0, below.width, below.height).data; let a = 0; for (let k = 3; k < d.length; k += 16) a += d[k]; if (a < 255 * 4) below = null; }   // basically empty: use the sample scene
+    return { below, top };
+  }
+  /* The layers a photo can be colour-matched TO: other photo / paint layers on the page (never itself, adjustment
+     layers or group members). {id, name}[] — what the Adjust panel's picker lists. */
+  matchColorSources(id) {
+    return this.fc.getObjects().filter(o => o.id && o.id !== id && !this._isoEntry(o) && (o.type === 'image' || o.role === 'paint') && o.role !== 'adjustment' && o.role !== 'bg')
+      .map(o => ({ id: o.id, name: layerLabel(o) })).reverse();
+  }
+  /* Match Color: pull layer `id`'s colour balance toward layer `refId`'s (Photoshop's Match Color). Measured on
+     the layers' own pixels at reduced size, alpha-weighted, so cut-outs are judged on their subject. Stored as
+     fx.match on the layer and applied by a filter: non-destructive, undoable, saved. `amount` 0..1 is how far
+     to go; `refId` null/omitted clears it. */
+  matchColor(id, refId, { amount = 1 } = {}) {
+    const o = this._byId(id);
+    if (!o || o.type !== 'image' || o.role === 'adjustment') return { status: 'error', reason: 'not_image' };
+    if (refId == null) { o.fx = { ...FX_DEFAULTS, ...(o.fx || {}), match: null }; this._rebuildImageFilters(o); this.fc.requestRenderAll(); this.commit('match-color'); return { status: 'ok', cleared: true }; }
+    const r = this._byId(refId);
+    if (!r || r === o || (r.type !== 'image' && r.role !== 'paint')) return { status: 'error', reason: 'bad_reference' };
+    const small = (layer) => { const c = this._layerSourceCanvas(layer), k = Math.min(1, 160 / Math.max(c.width, c.height)), d = document.createElement('canvas'); d.width = Math.max(1, Math.round(c.width * k)); d.height = Math.max(1, Math.round(c.height * k)); const x = d.getContext('2d', { willReadFrequently: true }); x.drawImage(c, 0, 0, d.width, d.height);
+      const img = x.getImageData(0, 0, d.width, d.height);
+      // a masked layer (a cut-out) is judged on what its mask lets through: the mask is stretched over the element, so draw it
+      // the same size on white (untouched mask = visible) and scale each pixel's alpha by it
+      if (layer.maskCanvas && layer.maskEnabled !== false) { const mm = document.createElement('canvas'); mm.width = d.width; mm.height = d.height; const mx = mm.getContext('2d', { willReadFrequently: true }); mx.fillStyle = '#fff'; mx.fillRect(0, 0, d.width, d.height); mx.drawImage(layer.maskCanvas, 0, 0, d.width, d.height); const md = mx.getImageData(0, 0, d.width, d.height).data; for (let i = 0; i < img.data.length; i += 4) img.data[i + 3] = img.data[i + 3] * md[i] / 255; }
+      return img.data; };
+    // measure the SOURCE without a previous match applied, so re-matching is idempotent
+    const prev = o.fx && o.fx.match; if (prev) { o.fx = { ...o.fx, match: null }; }
+    const m = computeMatch(small(o), small(r));
+    if (!m) { if (prev) o.fx = { ...o.fx, match: prev }; return { status: 'error', reason: 'no_pixels' }; }
+    o.fx = { ...FX_DEFAULTS, ...(o.fx || {}), match: { g: m.g, o: m.o, amount: Math.max(0, Math.min(1, amount)), ref: refId } };
+    this._rebuildImageFilters(o); this.fc.requestRenderAll(); this.commit('match-color');
+    return { status: 'ok', gain: m.g.map(v => +v.toFixed(3)), offset: m.o.map(v => +v.toFixed(1)) };
+  }
+  /* Photoshop's "gradient on a layer mask", as a call: `from` and `to` are scene points; the layer is
+     revealed at `from` and hidden at `to` (`reverse` flips that, `radial` makes `from` the centre and
+     the distance to `to` the radius; `multiply` keeps what the mask already hides, so a second gradient
+     can fade a different edge). Adds a mask first when the layer has none. One undo step. */
+  fillMaskGradient(id, from, to, { reverse = false, radial = false, multiply = false } = {}) {
+    const o = this._byId(id); if (!o || !this._maskable(o)) return { status: 'error', reason: 'not_maskable' };
+    if (!o.maskCanvas) this.addMask(id);
+    if (!o.maskCanvas || !from || !to || (from.x === to.x && from.y === to.y)) return { status: 'error', reason: 'bad_points' };
+    const snap = document.createElement('canvas'); snap.width = o.maskCanvas.width; snap.height = o.maskCanvas.height;
+    snap.getContext('2d').drawImage(o.maskCanvas, 0, 0);
+    this._paintMaskGradient(o, snap, from, to, { reverse, radial, multiply });
+    const mf = (o.filters || []).find(f => f.type === 'MaskFilter'); if (mf) mf.maskCanvas = o.maskCanvas;
+    if (this._isVectorMasked(o)) touchVectorMask(o); else o.applyFilters();
+    this.fc.requestRenderAll(); this.commit('mask-gradient');
+    return { status: 'ok' };
+  }
   addMask(id) {
     const o = this._byId(id); if (!this._maskable(o) || o.maskCanvas) return;
     if (this._isVectorMasked(o)) { this._addVectorMask(o); this.fc.renderAll(); this.commit('add-mask'); return; }
@@ -3819,6 +4617,88 @@ export class Editor {
     o.applyFilters();
     this.fc.renderAll();
     this.commit('add-mask');
+  }
+  /* What the Feather control would act on right now: the pixel selection, else the active (or last
+     active — drawing tools drop Fabric's own selection) image layer. */
+  featherTarget() {
+    if (this.selection) return { kind: 'selection', value: this.selection.feather || 0 };
+    const a = this.fc.getActiveObject();
+    const o = a && a.type !== 'activeSelection' ? a : (!a && this._lastActiveId ? this._byId(this._lastActiveId) : null);
+    if (o && (o.type === 'image' || o.role === 'paint') && !this._isVectorMasked(o)) return { kind: 'layer', id: o.id, value: o.edgeFeather || 0 };
+    return null;
+  }
+  /* (Re)paint a layer's generated feather mask: white box inset by `v` layer-px, blurred. The mask is stretched
+     over the layer, so everything is worked out in the layer's current on-screen size. */
+  _paintFeatherMask(o, v) {
+    const mc = o.maskCanvas, ctx = mc.getContext('2d');
+    const sw = Math.max(1, o.getScaledWidth()), sh = Math.max(1, o.getScaledHeight()), kx = mc.width / sw, ky = mc.height / sh;
+    const t = document.createElement('canvas'); t.width = mc.width; t.height = mc.height;
+    const tc = t.getContext('2d');
+    tc.fillStyle = '#000'; tc.fillRect(0, 0, t.width, t.height);
+    tc.save(); tc.scale(kx, ky); tc.fillStyle = '#fff';
+    const inset = Math.min(v, sw / 2.2, sh / 2.2);
+    tc.fillRect(inset, inset, sw - 2 * inset, sh - 2 * inset); tc.restore();
+    const f = document.createElement('canvas'); f.width = mc.width; f.height = mc.height;
+    const fc = f.getContext('2d'); fc.fillStyle = '#000'; fc.fillRect(0, 0, f.width, f.height);
+    fc.filter = `blur(${Math.max(0.5, inset * (kx + ky) / 4)}px)`; fc.drawImage(t, 0, 0);
+    ctx.clearRect(0, 0, mc.width, mc.height); ctx.drawImage(f, 0, 0);
+  }
+  /* Edge feather for an image/paint layer: its outline fades out over ~px (Photoshop's mask Feather).
+     Built on the layer mask, so it's non-destructive and saves/undoes with the document. A layer with
+     no hand-painted mask gets a generated one (re-made on every change, 0 removes it); a layer that
+     already has a painted mask gets that mask blurred instead. */
+  setEdgeFeather(id, px, { bake = false } = {}) {
+    const t = id ? null : this.featherTarget();
+    const o = id ? this._byId(id) : (t && t.kind === 'layer' ? this._byId(t.id) : this.fc.getActiveObject());
+    if (!o || o.type === 'activeSelection' || !(o.type === 'image' || o.role === 'paint') || this._isVectorMasked(o)) return { status: 'error', reason: 'need_image_layer' };
+    const v = Math.max(0, Math.min(300, Math.round(+px || 0)));
+    if (bake) return this._bakeEdgeFeather(o, v);
+    const generated = !o.maskCanvas || o.edgeFeather > 0;
+    if (!v && generated) { if (o.maskCanvas) { o.edgeFeather = 0; this.removeMask(o.id); } return { status: 'ok', result: 0 }; }
+    if (!o.maskCanvas) {
+      o.maskCanvas = createMaskCanvas(this.W, this.H); o.maskEnabled = true;
+      const fs = o.filters || [], gi = fs.findIndex(f => f.type === 'Geometry');
+      o.filters = [...fs.slice(0, gi + 1), new (makeMaskFilterClass(this.fabric))({ maskCanvas: o.maskCanvas }), ...fs.slice(gi + 1)];
+    }
+    const mc = o.maskCanvas, ctx = mc.getContext('2d');
+    // the mask is stretched over the layer, so work in the layer's own on-screen pixels
+    const sw = Math.max(1, o.getScaledWidth()), sh = Math.max(1, o.getScaledHeight()), kx = mc.width / sw, ky = mc.height / sh;
+    if (generated) {
+      this._paintFeatherMask(o, v);
+      o.edgeFeather = v; o._featherSize = `${Math.round(o.getScaledWidth())}x${Math.round(o.getScaledHeight())}`;
+    } else {
+      const f = document.createElement('canvas'); f.width = mc.width; f.height = mc.height;
+      const fc = f.getContext('2d'); fc.filter = `blur(${Math.max(0.5, v * (kx + ky) / 4)}px)`; fc.drawImage(mc, 0, 0);
+      ctx.clearRect(0, 0, mc.width, mc.height); ctx.drawImage(f, 0, 0);
+    }
+    const mf = (o.filters || []).find(x => x.type === 'MaskFilter'); if (mf) mf.maskCanvas = o.maskCanvas;
+    o.applyFilters(); this.fc.renderAll();
+    this.commit('feather');
+    return { status: 'ok', result: v };
+  }
+  /* "On the real layer": fade the image's own pixels (permanent — no mask to edit later; undo reverts it).
+     Works on the unfiltered source, so photo adjustments stay live on top. A generated feather mask is dropped first. */
+  _bakeEdgeFeather(o, v) {
+    const el = o._originalElement || o._element;
+    if (!v || !el || o.type !== 'image') return { status: 'error', reason: v ? 'need_image_layer' : 'nothing_to_apply' };
+    if (o.edgeFeather > 0 && o.maskCanvas) { o.maskCanvas = null; o.maskEnabled = false; o.filters = (o.filters || []).filter(f => f.type !== 'MaskFilter'); }
+    o.edgeFeather = 0;
+    const w = el.naturalWidth || el.width, h = el.naturalHeight || el.height;
+    const sx = Math.abs(o.scaleX) || 1, sy = Math.abs(o.scaleY) || 1;   // layer px -> source px
+    const inset = Math.min(v / sx, w / 2.2, h / 2.2 / (sy / sx));
+    const t = document.createElement('canvas'); t.width = w; t.height = h;
+    const tc = t.getContext('2d'); tc.fillStyle = '#fff';
+    tc.fillRect(inset, inset * sx / sy, w - 2 * inset, h - 2 * inset * sx / sy);
+    const m = document.createElement('canvas'); m.width = w; m.height = h;
+    const mc = m.getContext('2d'); mc.filter = `blur(${Math.max(0.5, inset / 2)}px)`; mc.drawImage(t, 0, 0);
+    const out = document.createElement('canvas'); out.width = w; out.height = h;
+    const oc = out.getContext('2d'); oc.drawImage(el, 0, 0, w, h);
+    oc.globalCompositeOperation = 'destination-in'; oc.drawImage(m, 0, 0);
+    o.setElement(out);
+    o.dirty = true; if (o.filters && o.filters.length) o.applyFilters();
+    this.fc.renderAll();
+    this.commit('feather-bake');
+    return { status: 'ok', result: v };
   }
   removeMask(id) {
     const o = this._byId(id); if (!o || !o.maskCanvas) return;
@@ -3865,7 +4745,12 @@ export class Editor {
     // Mask strokes only ever come from brush/pencil/eraser (see _down/_move) — auto-switching to
     // brush means a host UI's "Add mask" / "Edit mask" action can paint immediately, rather than
     // silently doing nothing until the caller separately remembers to also pick a paint tool.
-    if (!['brush', 'pencil', 'eraser'].includes(this.tool)) this.setTool('brush');
+    // The tool it replaced comes back when mask editing ends (see exitMaskEdit).
+    if (!['brush', 'pencil', 'eraser'].includes(this.tool)) { this._maskEdit.prevTool = this.tool; this.setTool('brush'); }
+    // A layer cut out offline opens on the Keep touch-up brush — what touching up a cut-out almost
+    // always means — rather than with neither Keep nor Remove picked and a stroke's effect unclear.
+    // setMaskRefine(null) still gives plain black/white mask painting.
+    if (!this.toolOpts.maskRefine && this.canRefineCutout(id)) { this.toolOpts.maskRefine = 'keep'; this._emit('maskrefine', 'keep'); }
     this._emit('maskedit', this._maskEdit);
   }
   /* Ending mask edit outside the normal mouseup path (a host UI switching layers mid-stroke, or
@@ -3874,11 +4759,15 @@ export class Editor {
   exitMaskEdit() {
     if (!this._maskEdit) return;
     this._flushFrameJob('mask');
+    const prevTool = this._maskEdit.prevTool;
     this._maskEdit = null;
     this._maskDrag = null;
     this._refineStroke = null;
     if (this.toolOpts.maskRefine) { this.toolOpts.maskRefine = null; this._emit('maskrefine', null); }
     this._emit('maskedit', null);
+    // Mask editing switched to the brush on its own: hand back the tool the user had, or the next
+    // click on the canvas would paint straight onto the layer. A tool they picked since is theirs.
+    if (prevTool && this.tool === 'brush') this.setTool(prevTool);
   }
   /* applyFilters() re-runs the WHOLE filter chain from the pristine source (including MaskFilter's
      own full getImageData + per-pixel loop over the artboard) — expensive enough that calling it
@@ -3931,12 +4820,35 @@ export class Editor {
      (both rx and ry together — the properties panel exposes one "corner radius" field, not
      independent x/y radii); no-op on anything but a rect, same silent-no-op contract as
      setFill/setShapeGradient for a property that doesn't apply to the active object's type. */
-  setNumeric(patch, { live = false } = {}) {
+  /* `keepRatio`: a W or H edit scales the other side by the same factor (the panel's "Keep
+     proportions"), so typing a width doesn't stretch a photo. */
+  /* The X/Y the panels show: the top-left of the layer's unrotated box, in scene px — the same for
+     every origin (stickers and pasted copies are centre-origin, so raw left/top was their centre). */
+  panelPosition(o = this.fc.getActiveObject()) {
+    if (!o) return null;
+    if (o.originX === 'left' && o.originY === 'top') return { x: o.left || 0, y: o.top || 0 };
+    const p = o.translateToOriginPoint(o.getCenterPoint(), 'left', 'top');
+    return { x: p.x, y: p.y };
+  }
+  setNumeric(patch, { live = false, keepRatio = false } = {}) {
     const o = this.fc.getActiveObject(); if (!o) return;
+    if (keepRatio && ('w' in patch) !== ('h' in patch)) {
+      const curW = o.getScaledWidth ? o.getScaledWidth() : o.width * (o.scaleX || 1);
+      const curH = o.getScaledHeight ? o.getScaledHeight() : o.height * (o.scaleY || 1);
+      if (curW && curH) patch = 'w' in patch ? { ...patch, h: curH * Math.max(1, patch.w) / curW } : { ...patch, w: curW * Math.max(1, patch.h) / curH };
+    }
     // pin a legacy rect's radius BEFORE any w/h rescale below, or it'd be re-read off the stretched shape
     if (o.type === 'rect' && o.cornerRadius == null) o.cornerRadius = this.cornerRadiusOf(o);
-    if ('x' in patch) o.left = patch.x;
-    if ('y' in patch) o.top = patch.y;
+    // Turn about the layer's centre, like the on-canvas rotate handle — setting angle alone pivots
+    // on the top-left origin, so 180° -> 0° swung a photo clean off the artboard. (Before x/y, so an explicit position still wins.)
+    if ('angle' in patch) { const c = o.getCenterPoint(); o.angle = patch.angle; o.setPositionByOrigin(c, 'center', 'center'); }
+    // X/Y are the layer's top-left corner whatever its origin: a sticker (centre origin) typed X 80
+    // put its CENTRE at 80 — half off the page — while the same field meant the corner elsewhere.
+    if ('x' in patch || 'y' in patch) {
+      const tl = this.panelPosition(o);
+      const dx = 'x' in patch ? patch.x - tl.x : 0, dy = 'y' in patch ? patch.y - tl.y : 0;
+      o.set({ left: (o.left || 0) + dx, top: (o.top || 0) + dy });
+    }
     if ('w' in patch) {
       const curW = o.getScaledWidth ? o.getScaledWidth() : o.width * (o.scaleX || 1);
       if (curW) o.scaleX = (o.scaleX || 1) * (Math.max(1, patch.w) / curW);
@@ -3945,26 +4857,66 @@ export class Editor {
       const curH = o.getScaledHeight ? o.getScaledHeight() : o.height * (o.scaleY || 1);
       if (curH) o.scaleY = (o.scaleY || 1) * (Math.max(1, patch.h) / curH);
     }
-    if ('angle' in patch) o.angle = patch.angle;
     if ('skewX' in patch) o.skewX = patch.skewX;
     if ('skewY' in patch) o.skewY = patch.skewY;
-    if ('rx' in patch && o.type === 'rect') o.cornerRadius = Math.max(0, patch.rx);   // scene px — see _bindRoundCorners
+    if ('rx' in patch && (o.type === 'rect' || o.type === 'image')) o.cornerRadius = Math.max(0, patch.rx);   // scene px — see _bindRoundCorners / _roundImageCorners
     this._normalizeCorners(o);   // rects, and rects inside a group (e.g. an ad CTA pill)
     o.setCoords();
     this.fc.renderAll();
     if (live) this._liveCommit('transform'); else this.commit('transform');
   }
 
+  /* The colour the swatch should show for a text being edited with characters highlighted: the
+     fill of the first selected character (per-char style, falling back to the object's fill).
+     null when not editing a range — callers then use the object's own fill. */
+  textSelectionFill() {
+    const o = this.fc.getActiveObject();
+    if (!o || !o.isEditing || o.selectionStart === o.selectionEnd) return null;
+    const st = o.getSelectionStyles(o.selectionStart, o.selectionStart + 1, true)[0];
+    return (st && st.fill) || o.fill;
+  }
+
   /* Recolors the active object (shape fill or text colour) — an activeSelection applies the same
      colour to every member, matching how alignActiveSelection/setLayer treat a multi-selection. */
   setFill(color) {
     const o = this.fc.getActiveObject(); if (!o) return;
+    // mid-edit with characters highlighted: recolour just that range, like Figma/Photoshop
+    if (o.isEditing && o.selectionStart !== o.selectionEnd) {
+      o.setSelectionStyles({ fill: color }, o.selectionStart, o.selectionEnd);
+      o.dirty = true;
+      this.fc.renderAll();
+      this.commit('fill');
+      return;
+    }
     // picking a colour for a hidden fill shows it again — otherwise the change is invisible
-    if (o.type === 'activeSelection') o.forEachObject(m => m.set({ fill: color, fillOff: false }));
-    else o.set({ fill: color, fillOff: false });
+    if (o.type === 'activeSelection') o.forEachObject(m => this._applyFill(m, color));
+    else this._applyFill(o, color);
     o.dirty = true;
     this.fc.renderAll();
     this.commit('fill');
+  }
+
+  /* A baked-text sticker is a group, and Fabric never paints a group's own fill: its colour lives on
+     the base shape, with the label's ink re-picked for contrast (as addSticker does). The group's
+     `fill` mirrors the shape's so a panel reading o.fill shows the real colour. */
+  _applyFill(o, color) {
+    // ad-copy groups: the colour is a factory option (pill / price / mark), rebuilt in place
+    if (o.type === 'group' && AD_FACTORIES[o.role] && typeof color === 'string') {
+      this._rebuildAd(o, o.role === 'brand' ? { color } : { fill: color, ink: undefined });
+      return;
+    }
+    if (o.type === 'group' && o.role === 'shape') {
+      const hex = typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color) ? color : null;
+      const ink = hex && relLum(hexRgb(hex)) > 0.6 ? '#0c0c0e' : '#ffffff';
+      o.getObjects().forEach(k => {
+        if (k.type === 'i-text' || k.type === 'textbox') { if (hex) k.set('fill', ink); }
+        else k.set({ fill: color, fillOff: false });
+      });
+      o.set({ fill: color, fillOff: false });
+      o.dirty = true;
+      return;
+    }
+    o.set({ fill: color, fillOff: false });
   }
 
   /* Border/stroke — patch keys: color, width, plus the style keys stroke.js handles: style
@@ -3985,6 +4937,7 @@ export class Editor {
       m.set('strokeOff', false);   // editing a hidden border shows it again (same as setFill)
     };
     if (o.type === 'activeSelection') o.forEachObject(apply); else apply(o);
+    (o.type === 'activeSelection' ? o.getObjects() : [o]).forEach(m => { if (m.type === 'image' && m.cornerRadius) this._roundImageCorners(m); });
     o.dirty = true;
     this.fc.renderAll();
     this.commit('stroke-style');
@@ -4102,6 +5055,35 @@ export class Editor {
     o.dirty = true;
     this.fc.renderAll();
     this.commit('text-props');
+    if ('fontFamily' in patch || 'fontWeight' in patch || 'fontStyle' in patch) this._ensureTextFonts();
+  }
+  /* Text laid out before its web font loaded keeps the fallback face's metrics: the box is too
+     narrow, centring is off, and the cached render clips the last letters (after a reload, every
+     restored text layer). Loads each face the scene's text uses that isn't in yet, then re-measures.
+     Resolves once that's done; no history step. */
+  _ensureTextFonts() {
+    if (typeof document === 'undefined' || !document.fonts || !document.fonts.load) return Promise.resolve();
+    const specs = new Set();
+    const walk = (o) => {
+      if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') specs.add(`${o.fontStyle === 'italic' ? 'italic ' : ''}${o.fontWeight || 'normal'} 16px ${o.fontFamily}`);
+      else if (o.getObjects) o.getObjects().forEach(walk);
+    };
+    this.fc.getObjects().forEach(walk);
+    const pending = [...specs].filter(s => { try { return !document.fonts.check(s); } catch (e) { return false; } });
+    if (!pending.length) return Promise.resolve();
+    return Promise.all(pending.map(loadFontFace)).then(() => { if (!this._destroyed) this.refreshFonts(); });
+  }
+  /* Re-measures every text object after a font finished loading (Fabric caches glyph widths per
+     family, so text laid out in the fallback face would keep the wrong box). No history step. */
+  refreshFonts() {
+    const fab = this.fabric || (typeof window !== 'undefined' ? window.fabric : null);
+    if (fab && fab.util && fab.util.clearFabricFontCache) fab.util.clearFabricFontCache();
+    const walk = (o) => {
+      if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') { o.initDimensions(); o.setCoords(); o.dirty = true; }
+      else if (o.getObjects) o.getObjects().forEach(walk);
+    };
+    this.fc.getObjects().forEach(walk);
+    this.fc.requestRenderAll();
   }
   getTextProps() {
     const o = this.fc.getActiveObject();
@@ -4116,14 +5098,39 @@ export class Editor {
   }
 
   /* Resizes the artboard boundary itself (Photoshop's "Canvas Size", not "Image Size") — existing
-     layers keep their absolute position and scale, so growing the canvas adds blank space and
-     shrinking it can clip content rather than rescaling everything to fit. This is a purely
+     layers keep their scale, so growing the canvas adds blank space and shrinking it can clip
+     content rather than rescaling everything to fit. Like Photoshop the content stays centred
+     (anchor 'center', the default): switching a photo's page to 4:5 trims or pads both sides
+     evenly instead of piling all the change onto the right/bottom. anchor 'top-left' keeps every
+     layer's absolute position. This is a purely
      LOGICAL resize: W/H are the artboard's own size, independent of fc's own DOM dimensions
      (which stay whatever the host's stage measures them at — see the constructor comment). The
      'resize' event below is the host's cue to re-fit its viewport transform around the new W/H. */
-  resizeCanvas(width, height) {
+  resizeCanvas(width, height, { anchor = 'center' } = {}) {
     const w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height));
     if (w === this.W && h === this.H) return;
+    // With several frames only THIS frame's own layers re-centre; the others stay put, and
+    // neighbours to the right/below slide (with their layers) so the gap to them is preserved.
+    const multi = this._frames.length > 1, oldW = this.W, oldH = this.H;
+    const mine = multi ? new Set(this.fc.getObjects().filter(o => this._inActiveFrame(o))) : null;
+    const pushes = multi ? this._neighbourPushes(oldW, oldH, w - oldW, h - oldH) : [];
+    if (anchor === 'center') {
+      const dx = Math.round((w - this.W) / 2), dy = Math.round((h - this.H) / 2);
+      // Members of a multi-selection hold coordinates relative to it — drop it so they're absolute.
+      const act = this.fc.getActiveObject();
+      if ((dx || dy) && act && act.type === 'activeSelection') this.fc.discardActiveObject();
+      // Page-sized layers (backdrop, adjustment layers) belong to the page, not the content on it.
+      if (dx || dy) this.fc.getObjects().forEach(o => {
+        if (o.role === 'bg' || o.role === 'adjustment') return;
+        if (mine && !mine.has(o)) return;
+        o.set({ left: o.left + dx, top: o.top + dy }); o.setCoords();
+      });
+      if (!multi) this._shiftFrames(dx, dy);
+    }
+    pushes.forEach(p => {
+      p.objs.forEach(o => { o.set({ left: o.left + p.dx, top: o.top + p.dy }); o.setCoords(); });
+      p.f.x += p.dx; p.f.y += p.dy;
+    });
     this.W = w; this.H = h;
     this.engine.W = w; this.engine.H = h;
     // The magnetic-lasso edge map, the last wand seed, and every cached hover-preview polygon are
@@ -4134,6 +5141,7 @@ export class Editor {
     this._lastWandSeed = null;
     this._edgeMapSeq++;
     if (this._hoverCache) this._hoverCache.clear();
+    this._chosenSize = true;   // an explicit size: opening an image into the empty page keeps it (see openImage)
     this.fc.renderAll();
     this.commit('resize-canvas');
     this._emit('resize', { width: w, height: h });
@@ -4168,7 +5176,22 @@ export class Editor {
     this.commit('canvas-bg');
   }
 
-  _paintChecker(ctx) {
+  _paintOtherFrames(ctx) {
+    const v = this.fc.viewportTransform;
+    this._frames.forEach(f => {
+      if (f.id === this._frameActive) return;
+      const bg = f.bg !== undefined ? f.bg : this._background;
+      if (!bg || typeof bg !== 'string' || !/^#/.test(bg)) { if (this.fc.interactive) this._paintChecker(ctx, f); }
+      if (!bg || bg === 'transparent') return;
+      ctx.save();
+      ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+      ctx.fillStyle = bg;
+      ctx.fillRect(f.x, f.y, f.w, f.h);
+      ctx.restore();
+    });
+  }
+
+  _paintChecker(ctx, frame) {
     const v = this.fc.viewportTransform, s = 8;
     if (!this._checker) {
       const c = document.createElement('canvas'); c.width = c.height = s * 2;
@@ -4178,8 +5201,9 @@ export class Editor {
       this._checker = ctx.createPattern(c, 'repeat');
     }
     // Checker squares stay a fixed screen size at any zoom: clip in scene space, fill in stage space.
-    const tl = this.fabric.util.transformPoint({ x: 0, y: 0 }, v);
-    const br = this.fabric.util.transformPoint({ x: this.W, y: this.H }, v);
+    const fx = frame ? frame.x : 0, fy = frame ? frame.y : 0, fw = frame ? frame.w : this.W, fh = frame ? frame.h : this.H;
+    const tl = this.fabric.util.transformPoint({ x: fx, y: fy }, v);
+    const br = this.fabric.util.transformPoint({ x: fx + fw, y: fy + fh }, v);
     ctx.save();
     ctx.fillStyle = this._checker;
     ctx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
@@ -4198,11 +5222,27 @@ export class Editor {
       this.fc.renderAll();
     } else if (target) {
       target.set(this._cropRestore);
+      this._normalizeCorners(target);
       target.dirty = true;
       target.setCoords();
       this.fc.renderAll();
     }
     this._cropRestore = null;
+  }
+
+  /* Where the crop box may go: a layer crop can't reach past the layer (there's nothing there to
+     keep), so it's held to the layer's bounds; an artboard crop is free (dragging out pads the page). */
+  _cropBounds() {
+    const t = this._cropTarget && this._byId(this._cropTarget);
+    if (!t) return null;
+    const b = t.getBoundingRect(true, true);
+    return { x: b.left, y: b.top, w: b.width, h: b.height };
+  }
+  /* The "Original" crop ratio: the shape of what's being cropped — the image or layer itself, not
+     the page it sits on (a 9:16 photo on a 4:5 page is still 9:16). */
+  cropOriginalRatio() {
+    const b = this.tool === 'crop' && this._cropBounds();
+    return b && b.h ? b.w / b.h : this.W / this.H;
   }
 
   // Layers Crop clips with a rect clipPath: unrotated non-image layers that aren't the background /
@@ -4256,13 +5296,19 @@ export class Editor {
       // the object's current scale/crop to get the new local crop box.
       const before = target.getBoundingRect(true);
       const sx = target.scaleX || 1, sy = target.scaleY || 1;
-      const localX = (target.cropX || 0) + (this.crop.x - before.left) / sx;
-      const localY = (target.cropY || 0) + (this.crop.y - before.top) / sy;
+      // Whole source pixels: a fractional cropX/cropY resamples the image (a soft edge), and the
+      // window is held inside the source so a box dragged to the edge can't sample past it.
+      const el = target._element, natW = (el && (el.naturalWidth || el.width)) || Infinity, natH = (el && (el.naturalHeight || el.height)) || Infinity;
+      const localX = Math.max(0, Math.round((target.cropX || 0) + (this.crop.x - before.left) / sx));
+      const localY = Math.max(0, Math.round((target.cropY || 0) + (this.crop.y - before.top) / sy));
+      const localW = Math.max(1, Math.min(Math.round(this.crop.w / sx), natW - localX));
+      const localH = Math.max(1, Math.min(Math.round(this.crop.h / sy), natH - localY));
       target.set({
-        left: this.crop.x, top: this.crop.y, originX: 'left', originY: 'top',
+        left: before.left + (localX - (target.cropX || 0)) * sx, top: before.top + (localY - (target.cropY || 0)) * sy, originX: 'left', originY: 'top',
         cropX: localX, cropY: localY,
-        width: this.crop.w / sx, height: this.crop.h / sy,
+        width: localW, height: localH,
       });
+      this._normalizeCorners(target);
       target.dirty = true;
       target.setCoords();
       this.crop = null;
@@ -4274,6 +5320,7 @@ export class Editor {
       this.commit('crop');
       return;
     }
+    this._shiftFrames(-this.crop.x, -this.crop.y);
     const dim = applyCrop(this.fc, this.crop, this.engine);
     this.W = dim.width; this.H = dim.height;
     this.crop = null;
@@ -4290,13 +5337,17 @@ export class Editor {
 
   /* ── io ───────────────────────────────────────────────────────────────────────────────── */
   async openImage(src, { fitArtboard = true, replace = true } = {}) {
+    /* A size the user picked for an empty page (Instagram 4:5, say) is the document they meant to
+       make: the image is fitted into it rather than the page snapping to the photo's own shape.
+       Over existing work, Open still starts a new document the size of the image. */
+    if (fitArtboard && replace && this._chosenSize && !this.fc.getObjects().length) fitArtboard = false;
     if (replace) {
       // "Open image" starts a new document from the image — the old layers go (⌘Z brings them back).
       this._penAbandon(); this._endGradEdit();
       if (this._persp) this.cancelPerspectiveEdit();
       if (this._exitIsolation) this._exitIsolation();
       this.fc.discardActiveObject();
-      this.fc.getObjects().slice().forEach(o => this.fc.remove(o));
+      this.fc.getObjects().slice().forEach(o => { if (this._inActiveFrame(o)) this.fc.remove(o); });
       this.selection = null; this._polyBuild = null; this._lastActiveId = null;
       this._emit('selection', null);
     }
@@ -4305,6 +5356,7 @@ export class Editor {
       if (this._destroyed) return null;
       this.W = dim.width; this.H = dim.height;
       this.engine.W = dim.width; this.engine.H = dim.height;
+      this._chosenSize = false;
       this._emit('resize', dim);
     }
     const img = await addImageLayer(this.fabric, this.fc, src, { W: this.W, H: this.H });
@@ -4328,8 +5380,368 @@ export class Editor {
     this.fc.renderAll();
     return this.fc.toSVG({ width: this.W, height: this.H, viewBox: { x: 0, y: 0, width: this.W, height: this.H } });
   }
-  toJSON() { return this._withIsoRestored(() => serialize(this.fc, this.W, this.H)); }
-  loadJSON(json) { this._iso = []; restore(this.fc, json, { engine: this.engine, history: this.history, onDone: (w, h) => { this._afterRestore(w, h); this.commit('load'); } }); }
+  toJSON() { return this._withIsoRestored(() => serialize(this.fc, this.W, this.H, this._frameMeta())); }
+  loadJSON(json) { this._iso = []; restore(this.fc, json, { engine: this.engine, history: this.history, onDone: (w, h, meta) => { this._afterRestore(w, h, meta); this.commit('load'); } }); }
+
+  /* ── combine shapes (Union / Subtract / Intersect / Exclude / Flatten) ───────────────────
+     See booleans.js. Needs two or more selected layers, ALL of them combinable vector shapes —
+     a selection with an image (or text, a line, a group...) in it disables every operation. */
+  combineInfo() {
+    const a = this.fc.getActiveObject();
+    const objs = a && a.type === 'activeSelection' ? a.getObjects() : [];
+    const engine = hasClipEngine();
+    const none = { union: false, subtract: false, intersect: false, exclude: false, flatten: false };
+    if (objs.length < 2) return { count: objs.length, ok: false, reason: 'Select two or more shapes to combine them', engine, ops: none };
+    const bad = objs.map(combinableReason).find(Boolean) || '';
+    const ok = !bad;
+    return { count: objs.length, ok, reason: bad, engine, ops: { union: ok && engine, subtract: ok && engine, intersect: ok && engine, exclude: ok && engine, flatten: ok } };
+  }
+  /* Replaces the selected shapes with ONE pen path (styled like the bottom-most shape), placed at
+     the top-most one's stacking position. Undo restores the originals. */
+  combineShapes(op) {
+    if (!BOOLEAN_OPS.includes(op)) throw new Error('Unknown operation: ' + op);
+    const info = this.combineInfo();
+    if (!info.ok) throw new Error(info.reason);
+    if (!info.ops[op]) throw new Error('The polygon engine isn\u2019t available, so Union, Subtract, Intersect and Exclude are off.');
+    const sel = this.fc.getActiveObject();
+    const members = sel.getObjects().slice();
+    this.fc.discardActiveObject();                      // members hold absolute coordinates again
+    const all = this.fc.getObjects();
+    members.sort((p, q) => all.indexOf(p) - all.indexOf(q));
+    const rings = combineRings(op, members.map(o => objectRings(this.fabric, o)));
+    if (!rings.length) {
+      this.fc.setActiveObject(new this.fabric.ActiveSelection(members, { canvas: this.fc }));
+      this.fc.requestRenderAll();
+      throw new Error(op === 'intersect' ? 'Those shapes don\u2019t overlap, so there is nothing left to keep.' : 'Nothing is left after that operation.');
+    }
+    const base = members[0], topIdx = all.indexOf(members[members.length - 1]);
+    const path = new this.fabric.Path(ringsToPathD(rings), {
+      fill: base.fill, stroke: base.stroke, strokeWidth: base.strokeWidth, strokeLineJoin: base.strokeLineJoin, strokeLineCap: base.strokeLineCap,
+      strokeDashArray: base.strokeDashArray, opacity: base.opacity, shadow: base.shadow, fillRule: 'nonzero',
+    });
+    path.set({ id: uid(), role: 'shape', name: BOOLEAN_LABEL[op], shapeKind: 'pen' });
+    members.forEach(o => this.fc.remove(o));
+    this.fc.insertAt(path, Math.max(0, topIdx - (members.length - 1)), false);
+    this.fc.setActiveObject(path);
+    path.setCoords();
+    this.fc.renderAll();
+    this.commit('boolean-' + op);
+    this._emit('selection', this.selection);
+    return path.id;
+  }
+
+  /* ── frames ───────────────────────────────────────────────────────────────────────────────
+     A page can hold several frames (artboards) on one pasteboard, Figma-style. Objects are not
+     "owned" by a frame — a layer belongs to whichever frame its centre sits in, and exports crop
+     to a frame's rectangle. Only the ACTIVE frame is wired into W/H, align, crop, export,
+     fill-with-image and the rest; switching frames moves the scene so that frame is at (0,0). */
+  _frameRect(f) { return f.id === this._frameActive ? { x: 0, y: 0, w: this.W, h: this.H } : { x: f.x, y: f.y, w: f.w, h: f.h }; }
+  _frameMeta() {
+    return {
+      frames: this._frames.map(f => f.id === this._frameActive
+        ? { id: f.id, name: f.name, x: 0, y: 0, w: this.W, h: this.H }
+        : { id: f.id, name: f.name, x: f.x, y: f.y, w: f.w, h: f.h, bg: typeof f.bg === 'string' ? f.bg : null }),
+      active: this._frameActive,
+      org: { x: this._org.x, y: this._org.y },
+    };
+  }
+  /* Adopts a restored page's frame layout (undo/redo, tab switch, project open). Pre-frame saves
+     carry none: they become one frame. If the restore moved the scene's origin (undoing a frame
+     switch), the viewport is shifted by the same amount so the picture stays put on screen. */
+  _applyFrameMeta(meta) {
+    const prev = this._org;
+    if (meta && Array.isArray(meta.frames) && meta.frames.length) {
+      this._frames = meta.frames.map(f => ({ ...f }));
+      this._frameActive = this._frames.some(f => f.id === meta.active) ? meta.active : this._frames[0].id;
+      this._org = meta.org ? { x: meta.org.x || 0, y: meta.org.y || 0 } : { x: 0, y: 0 };
+    } else {
+      this._frames = [{ id: uid(), name: 'Frame 1' }];
+      this._frameActive = this._frames[0].id;
+      this._org = { x: 0, y: 0 };
+    }
+    this._frameSeq = Math.max(this._frameSeq || 0, this._frames.length);
+    const dx = this._org.x - prev.x, dy = this._org.y - prev.y;
+    if (dx || dy) {
+      const v = this.fc.viewportTransform.slice();
+      v[4] -= dx * v[0]; v[5] -= dy * v[3];
+      this.fc.setViewportTransform(v);
+    }
+    this._emit('frames', this.frameList());
+  }
+  /* Union of every frame, scene coordinates — what a host frames for "fit all frames". */
+  frameBounds() {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    this._frames.forEach(f => { const r = this._frameRect(f); x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h); });
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  frameList() { return this._frames.map(f => { const r = this._frameRect(f); return { id: f.id, name: f.name, width: Math.round(r.w), height: Math.round(r.h), active: f.id === this._frameActive }; }); }
+  get activeFrameId() { return this._frameActive; }
+  _frameAt(pt) { return this._frames.find(f => { const r = this._frameRect(f); return pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h; }) || null; }
+  // The frame a layer belongs to: the one its centre sits in, else the nearest (spill-over, or a layer parked between frames).
+  _frameOf(o) {
+    if (this._frames.length < 2) return this._frameActive;
+    const c = o.getCenterPoint(), hit = this._frameAt(c);
+    if (hit) return hit.id;
+    let best = null, bd = Infinity;
+    this._frames.forEach(f => { const r = this._frameRect(f), dx = Math.max(r.x - c.x, 0, c.x - (r.x + r.w)), dy = Math.max(r.y - c.y, 0, c.y - (r.y + r.h)), dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; best = f; } });
+    return best.id;
+  }
+  _inActiveFrame(o) { const c = o.getCenterPoint(); return c.x >= 0 && c.x <= this.W && c.y >= 0 && c.y <= this.H; }
+  // The scene itself moved by (dx,dy) (canvas resize / crop re-origin): keep the other frames, and the origin ledger, in step.
+  /* Which neighbours slide when the active frame grows/shrinks by (dW,dH): the ones at or beyond its
+     old right / bottom edge, by exactly that amount, together with the layers inside them. Worked out
+     BEFORE anything moves, because membership is by position. */
+  _neighbourPushes(oldW, oldH, dW, dH) {
+    const out = [];
+    this._frames.forEach(f => {
+      if (f.id === this._frameActive) return;
+      const dx = f.x >= oldW - 0.5 ? dW : 0, dy = f.y >= oldH - 0.5 ? dH : 0;
+      if (!dx && !dy) return;
+      const objs = this.fc.getObjects().filter(o => { const c = o.getCenterPoint(); return c.x >= f.x && c.x <= f.x + f.w && c.y >= f.y && c.y <= f.y + f.h; });
+      out.push({ f, dx, dy, objs });
+    });
+    return out;
+  }
+  _shiftFrames(dx, dy) {
+    if (!dx && !dy) return;
+    this._frames.forEach(f => { if (f.id !== this._frameActive) { f.x += dx; f.y += dy; } });
+    this._org.x += dx; this._org.y += dy;
+  }
+
+  /* The re-origin itself, without history or events — shared by activateFrame, removeFrame and
+     exportAllFrames. Every object (and every other frame) moves by the same vector and the viewport
+     moves the opposite way in screen space, so nothing visibly jumps. */
+  _switchFrame(f) {
+    if (f.id === this._frameActive) return;
+    if (this.tool === 'crop') this.setTool('select');
+    this._withIsoRestored(() => {
+      const act = this.fc.getActiveObject();
+      const keep = act && act.type !== 'activeSelection' ? act : null;
+      this.fc.discardActiveObject();
+      const cur = this._frames.find(x => x.id === this._frameActive);
+      cur.x = 0; cur.y = 0; cur.w = this.W; cur.h = this.H; cur.bg = this.fc.backgroundColor;
+      const dx = -f.x, dy = -f.y;
+      this.fc.getObjects().forEach(o => { o.set({ left: o.left + dx, top: o.top + dy }); o.setCoords(); });
+      this._frames.forEach(x => { if (x !== f) { x.x += dx; x.y += dy; } });
+      this._org.x += dx; this._org.y += dy;
+      this.W = f.w; this.H = f.h;
+      this.engine.W = f.w; this.engine.H = f.h;
+      this.fc.backgroundColor = f.bg !== undefined ? f.bg : this._background;
+      this._frameActive = f.id; f.x = 0; f.y = 0;
+      const v = this.fc.viewportTransform.slice();
+      v[4] -= dx * v[0]; v[5] -= dy * v[3];
+      this.fc.setViewportTransform(v);
+      this._dropDocState();
+      if (keep) this.fc.setActiveObject(keep);
+      this.fc.renderAll();
+    });
+  }
+
+  /* Makes `id` the working frame. `fit` also asks the host to re-frame the view on it (the
+     'resize' event hosts already answer with fit-to-screen); a click on a frame's label leaves the
+     view alone, like Figma. */
+  activateFrame(id, { fit = false } = {}) {
+    const f = this._frames.find(x => x.id === id);
+    if (!f || id === this._frameActive) return false;
+    this._switchFrame(f);
+    this.commit('frame');
+    this._emit('frames', this.frameList());
+    this._emit('selection', this.selection);
+    if (fit) this._emit('resize', { width: this.W, height: this.H });
+    return true;
+  }
+
+  /* New frame to the right of the rightmost one, tops aligned, and it becomes the working frame. */
+  addFrame({ name, width, height } = {}) {
+    if (this._frames.length >= MAX_FRAMES) return null;
+    const w = Math.max(1, Math.round(width || this.W)), h = Math.max(1, Math.round(height || this.H));
+    let right = 0;
+    this._frames.forEach(f => { const r = this._frameRect(f); right = Math.max(right, r.x + r.w); });
+    const f = { id: uid(), name: name || `Frame ${++this._frameSeq}`, x: right + FRAME_GAP, y: 0, w, h, bg: this._background };
+    this._frames.push(f);
+    this._switchFrame(f);
+    this.commit('add-frame');
+    this._emit('frames', this.frameList());
+    this._emit('selection', this.selection);
+    this._emit('resize', { width: this.W, height: this.H, all: true });
+    return f.id;
+  }
+
+  /* Deletes a frame together with the layers that sit in it (Figma behaviour). The last frame
+     can't be deleted. */
+  removeFrame(id) {
+    if (this._frames.length < 2) return false;
+    const i = this._frames.findIndex(x => x.id === id);
+    if (i < 0) return false;
+    const f = this._frames[i];
+    if (id === this._frameActive) this._switchFrame(this._frames[i + 1] || this._frames[i - 1]);
+    const r = { x: f.x, y: f.y, w: f.w, h: f.h };
+    this._withIsoRestored(() => {
+      this.fc.discardActiveObject();
+      this.fc.getObjects().slice().forEach(o => {
+        const c = o.getCenterPoint();
+        if (c.x >= r.x && c.x <= r.x + r.w && c.y >= r.y && c.y <= r.y + r.h) this.fc.remove(o);
+      });
+    });
+    this._frames.splice(this._frames.findIndex(x => x.id === id), 1);
+    this._dropDocState();
+    this.fc.renderAll();
+    this.commit('remove-frame');
+    this._emit('frames', this.frameList());
+    this._emit('resize', { width: this.W, height: this.H, all: true });
+    return true;
+  }
+
+  renameFrame(id, name) {
+    const f = this._frames.find(x => x.id === id);
+    name = String(name || '').trim().slice(0, 40);
+    if (!f || !name || name === f.name) return false;
+    f.name = name;
+    this.fc.requestRenderAll();
+    this.commit('rename-frame');
+    this._emit('frames', this.frameList());
+    return true;
+  }
+
+  /* One image per frame ([{id,name,url}]) — the active frame is restored afterwards and nothing is
+     committed, so exporting leaves no trace in history. */
+  exportAllFrames(format = 'png', mult = 1) {
+    const home = this._frames.find(f => f.id === this._frameActive), out = [];
+    const order = this._frames.slice();
+    try {
+      order.forEach(f => {
+        this._switchFrame(f);
+        out.push({ id: f.id, name: f.name, url: format === 'jpg' || format === 'jpeg' ? this.exportJPEG(0.92, mult) : this.exportPNG(mult) });
+      });
+    } finally { this._switchFrame(home); this._emit('frames', this.frameList()); }
+    return out;
+  }
+
+  /* Dragging a frame by its label moves the frame AND the layers sitting in it (Figma). The
+     active frame is pinned at scene (0,0), so dragging IT is done the other way round: everything
+     else moves by -d and the viewport pans by +d — on screen the frame follows the cursor and the
+     rest stays put. Work is relative to a snapshot taken at mouse-down, in stage pixels / zoom, so
+     the viewport moving under the cursor mid-drag can't compound. */
+  _frameDragStart(id, sp) {
+    const f = this._frames.find(x => x.id === id); if (!f) return;
+    this.fc.discardActiveObject();
+    const isActive = id === this._frameActive, r = this._frameRect(f);
+    const inside = (o) => { const c = o.getCenterPoint(); return c.x >= r.x && c.x <= r.x + r.w && c.y >= r.y && c.y <= r.y + r.h; };
+    const objs = this.fc.getObjects().filter(o => (isActive ? !inside(o) : inside(o)));
+    this._fdrag = {
+      id, sp, isActive, moved: false, z: this.fc.getZoom() || 1, v0: this.fc.viewportTransform.slice(),
+      items: objs.map(o => ({ o, l: o.left, t: o.top })),
+      frames: this._frames.filter(x => isActive ? x.id !== id : x.id === id).map(x => ({ f: x, x: x.x, y: x.y })),
+    };
+  }
+  _frameDragMove(sp) {
+    const d = this._fdrag;
+    if (!d.moved && Math.hypot(sp.x - d.sp.x, sp.y - d.sp.y) < 4) return;   // a click, not a drag
+    d.moved = true;
+    const dx = (sp.x - d.sp.x) / d.z, dy = (sp.y - d.sp.y) / d.z, k = d.isActive ? -1 : 1;
+    d.items.forEach(it => { it.o.set({ left: it.l + k * dx, top: it.t + k * dy }); it.o.setCoords(); });
+    d.frames.forEach(e => { e.f.x = e.x + k * dx; e.f.y = e.y + k * dy; });
+    if (d.isActive) { const v = d.v0.slice(); v[4] += dx * d.z; v[5] += dy * d.z; this.fc.setViewportTransform(v); }
+    this.fc.requestRenderAll();
+  }
+  _frameDragEnd() {
+    const d = this._fdrag; this._fdrag = null;
+    if (!d.moved) { this.activateFrame(d.id); return; }          // plain click on the label
+    const f = this._frames.find(x => x.id === d.id);
+    this._dropDocState();
+    if (f && f.id !== this._frameActive) this._switchFrame(f);   // the frame you moved becomes the working one
+    this.fc.renderAll();
+    this.commit('move-frame');
+    this._emit('frames', this.frameList());
+  }
+
+  /* Label strip above each frame, drawn on-screen only (from the overlay slot) — and the hit
+     rects clicks are tested against. Stage pixels, so it stays a readable size at any zoom. */
+  _drawFrameLabels(ctx) {
+    const v = this.fc.viewportTransform, F = this.fabric;
+    ctx.save();
+    ctx.font = '600 11px Inter, -apple-system, system-ui, sans-serif';
+    ctx.textBaseline = 'alphabetic';
+    this._frameLabels = [];
+    this._frames.forEach(f => {
+      const r = this._frameRect(f), tl = F.util.transformPoint({ x: r.x, y: r.y }, v);
+      const wpx = r.w * v[0];
+      // Boundary: a solid accent outline on the working frame so it's obvious which one is
+      // selected, a faint hairline on the rest. Drawn just OUTSIDE the edge so it never covers
+      // the artwork, and in stage pixels so the line stays crisp at any zoom.
+      if (this._frames.length > 1) {
+        const active = f.id === this._frameActive, lw = active ? 2 : 1, o = lw / 2;
+        ctx.save();
+        ctx.lineWidth = lw;
+        ctx.strokeStyle = active ? this.accent : 'rgba(128,128,136,.45)';
+        ctx.strokeRect(tl.x - o, tl.y - o, wpx + lw, r.h * v[3] + lw);
+        ctx.restore();
+      }
+      const name = f.name;
+      let text = name;
+      while (text.length > 1 && ctx.measureText(text).width > Math.max(30, wpx)) text = text.slice(0, -2) + '…';
+      const tw = ctx.measureText(text).width;
+      ctx.fillStyle = f.id === this._frameActive ? this.accent : '#918f8c';
+      ctx.fillText(text, tl.x, tl.y - 7);
+      this._frameLabels.push({ id: f.id, x: tl.x - 2, y: tl.y - 22, w: tw + 4, h: 20 });
+    });
+    ctx.restore();
+  }
+  _frameLabelAt(sp) { return this._frameLabels.find(l => sp.x >= l.x && sp.x <= l.x + l.w && sp.y >= l.y && sp.y <= l.y + l.h) || null; }
+
+  /* Every transient cache/tool state keyed to the CURRENT document's geometry — shared by reset()
+     and loadDocument() so a tab switch can never leak a selection, edge map or half-built path
+     from one document into the next. */
+  _dropDocState() {
+    this.clearSelection();
+    this._edgeMap = null;
+    this._lastWandSeed = null;
+    this._edgeMapSeq++;
+    this._objBoxes = []; this._objRegion = null; this._objSrc = null; this._objCycle = null;
+    this._objSeq++;
+    this.objCount = 0; this.multiCount = 0;
+    this._lastActiveId = null;
+    this._cropTarget = null;
+    this._cropRestore = null;
+    this._polyBuild = null;
+    this._penAbandon();
+    this._gradEdit = null; this._gradAxis = null; this._emit('gradientaxis', null);
+    if (this._hoverCache) this._hoverCache.clear();
+  }
+
+  /* Swaps the whole document for another one (multi-document tabs): `scene` is an Editor#toJSON()
+     string, `hist` optionally carries that document's own undo/redo stacks so each tab keeps its
+     history. Resolves once the scene is on the canvas. Unlike loadJSON() this is not an edit —
+     nothing is pushed on top of the previous document's history; the incoming stacks replace it. */
+  loadDocument(scene, hist) {
+    return new Promise((resolve) => {
+      this.history.lock = true;
+      this._iso = [];
+      if (this.tool === 'crop') this._restoreCropTarget();
+      if (this._maskEdit) this.exitMaskEdit();
+      this.fc.discardActiveObject();
+      this._dropDocState();
+      this.history.lock = false;
+      restore(this.fc, scene, { engine: this.engine, history: this.history, onDone: (w, h, meta) => {
+        this.W = w; this.H = h;
+        this._afterRestore(w, h, meta);
+        this._recomputeAdjustmentLayers();
+        this._syncHitAreas();
+        this.fc.renderAll();
+        const live = this.toJSON();
+        const past = hist && hist.past && hist.past.length ? hist.past.slice(0, -1).concat(live) : [live];
+        this.history.past = past;
+        this.history.future = hist && hist.future ? hist.future.slice() : [];
+        this._selUndo = []; this._selRedo = [];
+        this._emit('resize', { width: w, height: h });
+        this._emit('history', this.history.depth());
+        this._emit('objcount', 0);
+        this._emit('selection', null);
+        this._emit('change', { label: 'switch' });
+        resolve();
+      } });
+    });
+  }
 
   /* Back to a blank document — what a host's "New" command calls. Everything that survives is
      the things that aren't the DOCUMENT: the registered AI provider/key, the cv engine, the
@@ -4358,25 +5770,15 @@ export class Editor {
     // fc.clear() nulls backgroundColor; restore it so the artboard paints as a page again rather
     // than as a transparent hole over the void (see the _renderBackground override above).
     this.fc.backgroundColor = background != null ? background : this._background;
-    this.clearSelection();
-    this._edgeMap = null;
-    this._lastWandSeed = null;
-    this._edgeMapSeq++;
-    this._objBoxes = []; this._objRegion = null; this._objSrc = null; this._objCycle = null;
-    this._objSeq++;
-    this.objCount = 0; this.multiCount = 0;
-    this._lastActiveId = null;
-    this._cropTarget = null;
-    this._cropRestore = null;
-    this._polyBuild = null;
-    this._penAbandon();
-    this._gradEdit = null; this._gradAxis = null; this._emit('gradientaxis', null);
-    if (this._hoverCache) this._hoverCache.clear();
+    this._dropDocState();
+    this._frames = [{ id: uid(), name: 'Frame 1' }]; this._frameActive = this._frames[0].id; this._frameSeq = 1; this._org = { x: 0, y: 0 };
     this.history.past = []; this.history.future = [];
     this.history.lock = false;
+    this._chosenSize = false;
     this.fc.renderAll();
     this.commit('new');                       // single baseline entry, like the constructor's commit('init')
     this._emit('resize', { width: this.W, height: this.H });
+    this._emit('frames', this.frameList());
     this._emit('objcount', 0);
     this._emit('pen', null);
     this._emit('selection', null);
@@ -4515,15 +5917,103 @@ export class Editor {
      refined along the edge, then soft alpha + edge-colour decontamination). Works on the layer's
      own pixels capped at 1280px. Resolves { mask, decon, method } as canvases at that size, or
      null. Remembers the layer in this._cutout so Keep/Remove touch-ups can resume the cut. */
+  /* `win` shrunk past any near-uniform bars on its four sides (each side compared with its own edge
+     colour). Only bars of at least 1.5% of the window count; returns `win` unchanged otherwise. */
+  _trimMargins(src, win) {
+    try {
+      const k = Math.min(1, 320 / Math.max(win.w, win.h)), w = Math.max(8, Math.round(win.w * k)), h = Math.max(8, Math.round(win.h * k));
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(src, win.x, win.y, win.w, win.h, 0, 0, w, h);
+      const d = x.getImageData(0, 0, w, h).data, TOL = 14;
+      const px = (i, j) => (j * w + i) * 4;
+      const share = (get, n, ref) => { let ok = 0; for (let t = 0; t < n; t++) { const q = get(t); if (Math.abs(d[q] - ref[0]) <= TOL && Math.abs(d[q + 1] - ref[1]) <= TOL && Math.abs(d[q + 2] - ref[2]) <= TOL) ok++; } return ok / n; };
+      const colRef = (i) => [d[px(i, h >> 1)], d[px(i, h >> 1) + 1], d[px(i, h >> 1) + 2]], rowRef = (j) => [d[px(w >> 1, j)], d[px(w >> 1, j) + 1], d[px(w >> 1, j) + 2]];
+      const col = (i) => share(t => px(i, t), h, colRef(i)) >= 0.97, row = (j) => share(t => px(t, j), w, rowRef(j)) >= 0.97;
+      let l = 0, r = w, t = 0, b = h;
+      while (l < w / 3 && col(l)) l++;
+      while (r > w * 2 / 3 && col(r - 1)) r--;
+      while (t < h / 3 && row(t)) t++;
+      while (b > h * 2 / 3 && row(b - 1)) b--;
+      /* A bar has a hard inner edge: the first line of real content is mostly a DIFFERENT colour. A flat
+         studio backdrop is uniform too, but it carries on inside the picture (that line is still
+         mostly backdrop), and trimming it would throw away the very background being modelled. */
+      if (l && share(tt => px(l, tt), h, colRef(l - 1)) >= 0.5) l = 0;
+      if (r < w && share(tt => px(r - 1, tt), h, colRef(r)) >= 0.5) r = w;
+      if (t && share(tt => px(tt, t), w, rowRef(t - 1)) >= 0.5) t = 0;
+      if (b < h && share(tt => px(tt, b - 1), w, rowRef(b)) >= 0.5) b = h;
+      const min = (n) => Math.max(2, n * 0.015);
+      if (l < min(w)) l = 0; if (w - r < min(w)) r = w; if (t < min(h)) t = 0; if (h - b < min(h)) b = h;
+      if (!l && r === w && !t && b === h) return win;
+      const X = Math.round(l / k), Y = Math.round(t / k), X2 = Math.round(r / k), Y2 = Math.round(b / k);
+      return { x: win.x + X, y: win.y + Y, w: Math.max(1, Math.min(win.w - X, X2 - X)), h: Math.max(1, Math.min(win.h - Y, Y2 - Y)) };
+    } catch (e) { return win; }
+  }
   async _maskOffline(o) {
     if (!this.cv || typeof Worker === 'undefined') return null;
     try {
-      const imgd = prepImageData(this._layerSourceCanvas(o), 1280);
+      /* Only what the user can see is cut out: a cropped layer's crop window, not its whole source.
+         Cropping one bag out of a busy ad and removing its background must judge that bag against
+         ITS surroundings — run on the full ad, the cut is about the ad's own main subject and the
+         crop just shows a slice of it (the card behind the bag stayed). Outside the window the mask
+         hides (nothing there is part of the cut-out). */
+      const src = this._layerSourceCanvas(o);
+      // Flat bars round the photo (white pillarbox, black letterbox) aren't part of any scene: left in,
+      // they dominate the border ring the cutout models the backdrop from, so the real wall behind the
+      // subject reads as "subject". Cut only the content inside them; the bars stay hidden.
+      const win = this._trimMargins(src, this._cropWindow(o, src.width, src.height));
+      let part = src;
+      if (win.w !== src.width || win.h !== src.height) {
+        part = document.createElement('canvas'); part.width = win.w; part.height = win.h;
+        part.getContext('2d').drawImage(src, -win.x, -win.y);
+      }
+      const imgd = prepImageData(part, 1280);
       const r = await this.cv.cutout({ data: imgd.data, width: imgd.width, height: imgd.height });
       if (!r || r.empty || !r.alpha) { this._cutout = null; return null; }
-      this._cutout = { layerId: o.id, W: r.W, H: r.H, maskCanvas: null };
-      return this._cutCanvases(r);
+      this._cutout = { layerId: o.id, W: r.W, H: r.H, maskCanvas: null, win, srcW: src.width, srcH: src.height };
+      return this._placeCut(this._cutCanvases(r), this._cutout);
     } catch (e) { this._cutout = null; return null; }
+  }
+  // The visible part of an image layer, in its source pixels (the whole source when uncropped).
+  /* Undo/redo rebuild layers from JSON, so the cut-out layer comes back as a fresh object and
+     Keep/Remove went dead after any undo — exactly when a wrong touch-up stroke was just undone and
+     the user wants to carry on. If the cut-out layer still has a mask, re-base the worker's labels
+     on that restored mask and re-attach to it. */
+  _relinkCutout() {
+    const c = this._cutout, o = c && this._byId(c.layerId);
+    if (!o || !o.maskCanvas || o.maskCanvas === c.maskCanvas || !this.cv) return;
+    const mc = o.maskCanvas, sw = c.srcW || mc.width, sh = c.srcH || mc.height, win = c.win || { x: 0, y: 0, w: sw, h: sh };
+    const kx = mc.width / sw, ky = mc.height / sh;
+    const cnv = document.createElement('canvas'); cnv.width = c.W; cnv.height = c.H;
+    const x = cnv.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, c.W, c.H);   // an unpainted (transparent) mask pixel means "visible"
+    x.drawImage(mc, win.x * kx, win.y * ky, win.w * kx, win.h * ky, 0, 0, c.W, c.H);
+    const d = x.getImageData(0, 0, c.W, c.H).data, alpha = new Uint8Array(c.W * c.H);
+    for (let i = 0; i < alpha.length; i++) alpha[i] = d[i * 4];
+    const seq = this._relinkSeq = (this._relinkSeq || 0) + 1;
+    this.cv.cutoutSync(alpha).then(ok => {
+      if (!ok || this._destroyed || seq !== this._relinkSeq || this._cutout !== c || this._byId(c.layerId) !== o) return;
+      c.maskCanvas = o.maskCanvas;
+      this._emit('maskrefine', this.toolOpts.maskRefine);
+    }).catch(() => {});
+  }
+  _cropWindow(o, sw, sh) {
+    const x = Math.max(0, Math.min(sw - 1, Math.round(o.cropX || 0))), y = Math.max(0, Math.min(sh - 1, Math.round(o.cropY || 0)));
+    return { x, y, w: Math.max(1, Math.min(sw - x, Math.round(o.width || sw))), h: Math.max(1, Math.min(sh - y, Math.round(o.height || sh))) };
+  }
+  // A cut of the crop window → full-source-sized mask (hidden outside it) and edge-colour canvases.
+  _placeCut(cut, c) {
+    const { win, srcW, srcH } = c;
+    if (!win || (win.x === 0 && win.y === 0 && win.w === srcW && win.h === srcH)) return cut;
+    const place = (from, fill) => {
+      if (!from) return null;
+      const out = document.createElement('canvas'); out.width = srcW; out.height = srcH;
+      const x = out.getContext('2d');
+      if (fill) { x.fillStyle = fill; x.fillRect(0, 0, srcW, srcH); }
+      x.clearRect(win.x, win.y, win.w, win.h);
+      x.drawImage(from, win.x, win.y, win.w, win.h);
+      return out;
+    };
+    return { ...cut, mask: place(cut.mask, '#000'), decon: place(cut.decon, null) };
   }
   _cutCanvases(r) {
     const mask = document.createElement('canvas'); mask.width = r.W; mask.height = r.H;
@@ -4568,9 +6058,12 @@ export class Editor {
   /* A finished stroke (scene px) → the image's mask px (_imageMaskPoint) → cutout px hint →
      worker → mask. */
   _refineCutout(layer, stroke) {
-    const c = this._cutout, kx = c.W / layer.maskCanvas.width, ky = c.H / layer.maskCanvas.height;
+    // mask px → source px → the cut's own px (it covers only the crop window — see _maskOffline)
+    const c = this._cutout, mw = layer.maskCanvas.width, mh = layer.maskCanvas.height;
+    const sw = c.srcW || mw, sh = c.srcH || mh, win = c.win || { x: 0, y: 0, w: sw, h: sh };
+    const ex = sw / mw, ey = sh / mh, kx = c.W / win.w * ex, ky = c.H / win.h * ey;
     const pts = stroke.pts.map(p => this._imageMaskPoint(layer, p, stroke.r * 2));
-    const hint = { keep: stroke.keep, r: pts[0].size / 2 * Math.sqrt(kx * ky), pts: pts.map(p => ({ x: p.x * kx, y: p.y * ky })) };
+    const hint = { keep: stroke.keep, r: pts[0].size / 2 * Math.sqrt(kx * ky), pts: pts.map(p => ({ x: (p.x * ex - win.x) * c.W / win.w, y: (p.y * ey - win.y) * c.H / win.h })) };
     const last = stroke.pts[stroke.pts.length - 1];
     const run = (async () => {
       const r = await this.cv.cutoutRefine([hint]);
@@ -4579,7 +6072,7 @@ export class Editor {
       // push a stale entry (and wipe redo). A worker failure keeps the painted stroke as a plain edit.
       if (!this.canRefineCutout(layer.id)) return { status: 'error', reason: 'superseded' };
       if (!r || !r.alpha) { this.commit('mask-paint'); return { status: 'error', reason: 'no_refine' }; }
-      const cut = this._cutCanvases(r);
+      const cut = this._placeCut(this._cutCanvases(r), c);
       const mctx = layer.maskCanvas.getContext('2d');
       mctx.clearRect(0, 0, layer.maskCanvas.width, layer.maskCanvas.height);
       mctx.drawImage(cut.mask, 0, 0, layer.maskCanvas.width, layer.maskCanvas.height);
@@ -4663,7 +6156,7 @@ export class Editor {
   }
   async aiInsert(prompt) {
     const r = await this.ai.run('generateImage', prompt);
-    if (r.status === 'ok') await this.addImage(r.result, { name: prompt.slice(0, 24) });
+    if (r.status === 'ok') await this.addImage(r.result, { name: clipLabel(prompt, 32) });
     return r;
   }
   async openImageResult(dataURL) {
@@ -4929,7 +6422,7 @@ export class Editor {
       this.fabric.Image.fromURL(r.result, img => {
         if (this._destroyed) return resolve();
         const sc = Math.min(1, (this.W * 0.34) / (img.width || this.W));
-        img.set({ left: pt ? pt.x : this.W / 2, top: pt ? pt.y : this.H / 2, originX: 'center', originY: 'center', scaleX: sc, scaleY: sc, id: uid(), role: 'image', name: 'AI: ' + prompt.slice(0, 24) });
+        img.set({ left: pt ? pt.x : this.W / 2, top: pt ? pt.y : this.H / 2, originX: 'center', originY: 'center', scaleX: sc, scaleY: sc, id: uid(), role: 'image', name: 'AI: ' + clipLabel(prompt, 32) });
         this.fc.add(img); this.fc.setActiveObject(img);
         resolve();
       }, { crossOrigin: 'anonymous' });
@@ -5162,7 +6655,7 @@ export class Editor {
         txt.setPositionByOrigin(new this.fabric.Point((target.x0 + target.x1) / 2 - r.dx, (target.y0 + target.y1) / 2 - r.dy), 'center', 'center');
       } else txt.set({ left: x + (w - txt.width) / 2, top: y + (h - txt.height) / 2 });
       txt.setCoords();
-      txt.set({ role, regionType: rg.type, rstyle: rg.style || null, name: content.replace(/\s+/g, ' ').slice(0, 24) });
+      txt.set({ role, regionType: rg.type, rstyle: rg.style || null, name: clipLabel(content) });
       fc.add(txt);
       return { layer: txt, holePoly, holeGrow: textGrow, holeInk };
     }
@@ -5555,6 +7048,7 @@ export class Editor {
         document.removeEventListener('keydown', this._onPickModifier);
         document.removeEventListener('keyup', this._onPickModifier);
       }
+      if (this._onFontsLoaded && document.fonts) document.fonts.removeEventListener('loadingdone', this._onFontsLoaded);
     }
     clearTimeout(this._gradCommitT); this._gradCommitT = null;
     clearTimeout(this._liveCommitT); this._liveCommitT = null;
