@@ -1419,3 +1419,37 @@ test('colormatch: transparent pixels are ignored (a cut-out is judged on its sub
   const ref = noisy(100, [100, 100, 100], [30, 30, 30]), m = computeMatch(d, ref), out = new Uint8ClampedArray(d); applyMatch(out, m, 1);
   assert.deepEqual(Array.from(out.slice(4, 8)), [0, 0, 0, 0]); assert.equal(computeMatch(new Uint8ClampedArray(8), ref), null);
 });
+
+test('Google Fonts catalog: search ranks prefix matches first, filters by category, has no duplicates', async () => {
+  const { searchGoogleFonts, GOOGLE_FONT_CATALOG } = await import('../packages/core/src/fontcatalog.js');
+  assert.equal(new Set(GOOGLE_FONT_CATALOG.map(f => f.name)).size, GOOGLE_FONT_CATALOG.length);
+  const r = searchGoogleFonts('mont');
+  assert.equal(r[0].name, 'Montserrat');
+  assert.ok(searchGoogleFonts('SPACE').some(f => f.name === 'Space Grotesk'));          // case-insensitive
+  assert.ok(searchGoogleFonts('', 'monospace', 100).every(f => f.category === 'monospace'));
+  assert.equal(searchGoogleFonts('', 'all', 5).length, 5);
+  assert.deepEqual(searchGoogleFonts('zzzzqq'), []);
+});
+
+test('icons: search batches one request per set and builds SVG locally', async () => {
+  const { isIconId, iconUrl, searchIcons, fetchIconSVG } = await import('../packages/core/src/icons.js');
+  assert.ok(isIconId('mdi:heart') && isIconId('material-symbols:home-outline'));
+  assert.ok(!isIconId('heart') && !isIconId('mdi:../x') && !isIconId('a:b/c') && !isIconId(null));
+  const calls = [], real = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    const body = /\/search\?/.test(url)
+      ? { icons: ['mdi:heart', 'mdi:star', 'ri:heart-fill'] }
+      : { width: 24, height: 24, icons: Object.fromEntries(new URL(url).searchParams.get('icons').split(',').map(n => [n, { body: '<path fill="currentColor" d="M0 0h1v1z"/>' }])) };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  try {
+    const ids = await searchIcons('heart');
+    assert.deepEqual(ids, ['mdi:heart', 'mdi:star', 'ri:heart-fill']);
+    assert.equal(calls.length, 3, 'one search + one JSON request per set (mdi, ri)');
+    assert.ok(iconUrl('mdi:heart').startsWith('data:image/svg+xml,'));
+    const svg = await fetchIconSVG('mdi:star', '#ef6a2d');
+    assert.equal(calls.length, 3, 'already cached: no extra request');
+    assert.ok(svg.includes('fill="#ef6a2d"') && !svg.includes('currentColor') && svg.includes('viewBox="0 0 24 24"'));
+  } finally { globalThis.fetch = real; }
+});

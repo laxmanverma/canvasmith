@@ -201,7 +201,32 @@
   .font-item { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 9px; border-radius:7px; cursor:pointer; font-size:14px; color:var(--ink) }
   .font-item:hover, .font-item[data-on=true] { background:var(--bg) }
   .font-item .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .font-item { margin:0 6px }
+  .font-item .tag { flex:none; font-size:11px; color:var(--dim-2); display:flex; align-items:center; gap:4px }
+  .font-item .tag.add { color:var(--accent); opacity:0; font-weight:600 }
+  .font-item:hover .tag.add, .font-item:focus-visible .tag.add { opacity:1 }
+  .font-item .tag.ok { color:var(--dim) }
+  .font-empty { padding:18px 14px; font-size:12px; color:var(--dim); text-align:center; line-height:1.5 }
+  .fp-head { flex:none; padding:10px 10px 6px; border-bottom:1px solid var(--line) }
+  .fp-search { position:relative; margin-bottom:8px }
+  .fp-search .ico { position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--dim-2); display:flex; pointer-events:none }
+  #tx-font-pop .fp-search input[type=text] { width:100%; box-sizing:border-box; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 30px 8px 32px; font-size:12.5px; color:var(--ink); outline:none }
+  #tx-font-pop .fp-search input[type=text]:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) }
+  .fp-search input::placeholder { color:var(--dim-2) }
+  #fp-q-clear { all:unset; position:absolute; right:6px; top:50%; transform:translateY(-50%); width:20px; height:20px; display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer; color:var(--dim) }
+  #fp-q-clear:hover { background:var(--panel-2); color:var(--ink) }
+  #fp-q-clear[hidden] { display:none }
+  .fp-chips { display:flex; gap:4px; overflow-x:auto; padding-bottom:4px; scrollbar-width:none }
+  .fp-chips::-webkit-scrollbar { display:none }
+  .fp-chips button { all:unset; flex:none; cursor:pointer; padding:4px 10px; border-radius:6px; font-size:11.5px; font-weight:500; color:var(--dim) }
+  .fp-chips button:hover { color:var(--ink); background:var(--bg) }
+  .fp-chips button[data-on=true] { background:var(--accent); color:var(--accent-ink); font-weight:600 }
+  .fp-list { overflow-y:auto; flex:1; min-height:140px; padding:6px 0 }
+  .fp-foot { flex:none; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 12px; border-top:1px solid var(--line); font-size:10.5px; color:var(--dim-2) }
+  .fp-foot button { all:unset; cursor:pointer; display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:var(--ink); padding:4px 6px; margin:-4px -6px; border-radius:6px }
+  .fp-foot button:hover { background:var(--bg) }
   #tx-font-pop:not([hidden]) { display:flex }
+  #tx-font-pop .font-grp-label { padding:10px 14px 4px }
   .font-add { flex:none; display:flex; flex-wrap:wrap; gap:6px; padding:8px 2px 2px; margin-top:6px; border-top:1px solid var(--line) }
   .font-add input[type=text] { flex:1 1 120px; min-width:0; background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:6px 8px; font-size:12px; color:var(--ink) }
   .font-add .act { flex:none; padding:6px 10px; font-size:12px }
@@ -460,6 +485,27 @@
   .asset-thumb span { display:block; font-size:10px; color:var(--dim); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .asset-thumb:hover img { border-color:var(--dim-2) }
   #sticker-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px }
+  #icon-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:4px }
+  #icon-grid .sticker-thumb { padding:9px; border-color:transparent; background:var(--ctl, var(--bg)); border-radius:8px }
+  #icon-grid .sticker-thumb:hover { border-color:var(--accent); background:var(--panel-2) }
+  #icon-grid .sticker-thumb[disabled] { opacity:.5; pointer-events:none }
+  #icon-grid .skel { aspect-ratio:1; border-radius:8px; background:linear-gradient(100deg,var(--ctl, var(--bg)) 30%,var(--panel-2) 50%,var(--ctl, var(--bg)) 70%); background-size:300% 100%; animation:icon-shimmer 1.1s linear infinite }
+  @keyframes icon-shimmer { from { background-position:100% 0 } to { background-position:-100% 0 } }
+  .icon-search { position:relative; margin-bottom:10px }
+  .icon-search .ico { position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--dim-2); display:flex; pointer-events:none }
+  #icon-q { width:100%; box-sizing:border-box; background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:10px 34px 10px 34px; font-size:13px; color:var(--ink); outline:none }
+  #icon-q:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) }
+  #icon-q::placeholder { color:var(--dim-2) }
+  #icon-q-clear { all:unset; position:absolute; right:7px; top:50%; transform:translateY(-50%); width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer; color:var(--dim) }
+  #icon-q-clear:hover { background:var(--panel-2); color:var(--ink) }
+  #icon-q-clear[hidden] { display:none }
+  .icon-sugg { display:flex; gap:6px; overflow-x:auto; padding:0 0 8px; margin-bottom:6px; scrollbar-width:none; -webkit-mask:linear-gradient(90deg,#000 88%,transparent); mask:linear-gradient(90deg,#000 88%,transparent) }
+  .icon-sugg::-webkit-scrollbar { display:none }
+  .icon-sugg .chip { flex:none; text-transform:capitalize }
+  .icon-meta { display:flex; justify-content:space-between; align-items:center; font-size:11.5px; color:var(--dim); margin-bottom:8px; min-height:16px }
+  .icon-credit { color:var(--dim-2); font-size:10.5px }
+  .icon-glyph { width:100%; height:100%; background:var(--dim); -webkit-mask:var(--src) center/contain no-repeat; mask:var(--src) center/contain no-repeat }
+  .sticker-thumb:hover .icon-glyph { background:var(--ink) }
   .sticker-thumb { all:unset; box-sizing:border-box; cursor:pointer; aspect-ratio:1; border-radius:9px; border:1px solid var(--line); background:var(--bg); display:flex; align-items:center; justify-content:center; padding:10px; transition:border-color .1s,background .1s }
   .sticker-thumb:hover { border-color:var(--dim-2); background:var(--panel-2) }
   .sticker-thumb svg { width:100%; height:100%; color:var(--dim) }
@@ -1379,12 +1425,19 @@
       <div class="grp">Typography</div>
       <div class="popover-anchor" id="tx-font-anchor">
         <button class="act" id="tx-font-btn" style="justify-content:space-between"><span id="tx-font-current">Choose a font…</span><span id="tx-font-caret"></span></button>
-        <div class="popover" id="tx-font-pop" hidden style="width:100%;max-height:340px;flex-direction:column;left:0;right:auto;padding:6px">
-          <div id="tx-font-list" style="overflow-y:auto;flex:1;min-height:0"></div>
-          <div class="font-add">
-            <input id="tx-font-google" type="text" placeholder="Google font name, e.g. Space Grotesk" spellcheck="false" autocomplete="off">
-            <button class="act" id="tx-font-google-add" type="button">Add</button>
-            <button class="act" id="tx-font-upload" type="button" title="Upload .ttf, .otf, .woff or .woff2">Upload font…</button>
+        <div class="popover" id="tx-font-pop" hidden style="width:100%;max-height:430px;flex-direction:column;left:0;right:auto;padding:0">
+          <div class="fp-head">
+            <div class="fp-search">
+              <span class="ico" id="fp-q-ico"></span>
+              <input id="tx-font-google" type="text" placeholder="Search Google Fonts" aria-label="Search Google Fonts" spellcheck="false" autocomplete="off">
+              <button id="fp-q-clear" type="button" aria-label="Clear search" hidden></button>
+            </div>
+            <div class="fp-chips" id="tx-font-chips" role="tablist"></div>
+          </div>
+          <div id="tx-font-list" class="fp-list"></div>
+          <div class="fp-foot">
+            <button type="button" id="tx-font-upload" title="Upload .ttf, .otf, .woff or .woff2"><span id="fp-up-ico"></span>Upload font file</button>
+            <span>.ttf · .otf · .woff</span>
             <input id="tx-font-file" type="file" accept=".ttf,.otf,.woff,.woff2" hidden>
           </div>
         </div>
@@ -1493,9 +1546,24 @@
       </div>
     </div>
     <div id="stickers-panel" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto">
-      <div class="grp" style="margin-top:0;padding-top:0;border-top:none">Stickers</div>
-      <div id="sticker-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
-      <div id="sticker-grid"></div>
+      <div class="seg" id="stk-seg" role="tablist" style="margin-bottom:12px">
+        <button class="act" role="tab" data-v="shapes" data-on="true">Shapes</button>
+        <button class="act" role="tab" data-v="icons" data-on="false">Icons</button>
+      </div>
+      <div id="stk-shapes">
+        <div id="sticker-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+        <div id="sticker-grid"></div>
+      </div>
+      <div id="stk-icons" hidden>
+        <div class="icon-search">
+          <span class="ico" id="icon-q-ico"></span>
+          <input id="icon-q" type="text" placeholder="Search 200,000+ free icons" aria-label="Search icons" spellcheck="false" autocomplete="off">
+          <button id="icon-q-clear" type="button" aria-label="Clear search" hidden></button>
+        </div>
+        <div id="icon-sugg" class="icon-sugg"></div>
+        <div class="icon-meta"><span id="icon-status"></span><span class="icon-credit">Free · Iconify</span></div>
+        <div id="icon-grid"></div>
+      </div>
     </div>
     <div id="ai-panel" style="display:none; flex-direction:column; flex:1; min-height:0; overflow-y:auto">
       <div class="aix">
@@ -1602,7 +1670,7 @@
 </div>
 
 <script type="module">
-import { Editor, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, rgba, splitGradientStopColor, GeminiProvider, installBridge, installDropImport, selectionToPath2D, selectionPolys, makeShape, makeText, installKeybindings, installVoice, installColorPicker, trapDialog, mountBlendPicker, TOOL_KEYS, FONT_GROUPS, FONT_STYLESHEET_URL, addGoogleFont, addCustomFont, restoreUserFonts, STICKER_GROUPS, stickerSpec, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME,
+import { Editor, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, rgba, splitGradientStopColor, GeminiProvider, installBridge, installDropImport, selectionToPath2D, selectionPolys, makeShape, makeText, installKeybindings, installVoice, installColorPicker, trapDialog, mountBlendPicker, TOOL_KEYS, FONT_GROUPS, FONT_STYLESHEET_URL, addGoogleFont, addCustomFont, restoreUserFonts, searchGoogleFonts, loadFontPreviews, GOOGLE_FONT_CATEGORIES, searchIcons, iconUrl, ICON_SUGGESTIONS, STICKER_GROUPS, stickerSpec, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME,
   startSelection, updateSelection, finalizeSelection, startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild,
   snapToEdge, selectionBounds, uid, PAINT_TOOLS, SHAPE_TOOLS, SEL_TOOLS, installAutosave, restoreSession, readSession, DocumentSet, MAX_DOCS,
   discardToTrash, restoreDiscarded, exportProject, loadProject, FX_DEFAULTS, ADJUST_CONTROLS, formatAdjustValue, GEOMETRY_DEFAULTS, GEOMETRY_CONTROLS, formatGeometryValue,
@@ -3358,13 +3426,37 @@ function fontLabelFor(value) {
   for (const g of FONT_GROUPS) { const f = g.fonts.find(([, v]) => v === value); if (f) return f[0]; }
   return value || 'Choose a font…';
 }
+/* The popover shows either the installed fonts ("My fonts") or one slice of the Google Fonts catalog
+   (All / Sans / Serif / Display / Mono). Typing in the search box jumps to the catalog. Catalog rows
+   preview in their own face via lazily-loaded glyph subsets; clicking one adds + applies it. */
+const FONT_VIEWS = [['installed', 'My fonts'], ['all', 'All'], ['sans-serif', 'Sans'], ['serif', 'Serif'], ['display', 'Display'], ['monospace', 'Mono']];
+let fontView = 'installed';
+const txFontGoogle = document.getElementById('tx-font-google');
+const fontClear = document.getElementById('fp-q-clear');
+document.getElementById('fp-q-ico').innerHTML = iconSVG('search', 14);
+fontClear.innerHTML = iconSVG('close', 11);
+document.getElementById('fp-up-ico').innerHTML = iconSVG('plus', 13);
+const installedFont = (name) => FONT_GROUPS.some(g => g.fonts.some(([l]) => l.toLowerCase() === name.toLowerCase()));
 function renderFontPop() {
-  document.getElementById('tx-font-list').innerHTML = FONT_GROUPS.map(g => `<div class="font-grp-label">${g.label}</div>` +
-    g.fonts.map(([label, value]) => `<div class="font-item" data-on="${value === txFont.value}" data-value="${value.replace(/"/g, '&quot;')}">
-      <span class="nm" style="font-family:${value}">${label}</span><span class="ag" style="font-family:${value}">Ag</span>
-    </div>`).join('')).join('');
+  const list = document.getElementById('tx-font-list');
+  const q = txFontGoogle.value.trim();
+  fontClear.hidden = !txFontGoogle.value;
+  document.getElementById('tx-font-chips').innerHTML = FONT_VIEWS.map(([v, l]) => `<button type="button" role="tab" data-v="${v}" data-on="${v === fontView}" aria-selected="${v === fontView}">${l}</button>`).join('');
+  if (fontView === 'installed') {
+    list.innerHTML = FONT_GROUPS.map(g => `<div class="font-grp-label">${g.label}</div>` +
+      g.fonts.map(([label, value]) => `<div class="font-item" tabindex="0" data-on="${value === txFont.value}" data-value="${value.replace(/"/g, '&quot;')}">
+        <span class="nm" style="font-family:${value}">${label}</span><span class="ag" style="font-family:${value}">Ag</span>
+      </div>`).join('')).join('');
+    return;
+  }
+  const hits = searchGoogleFonts(q, fontView, 50);
+  list.innerHTML = hits.length ? hits.map(f => `<div class="font-item" tabindex="0" data-gf="${f.name}">
+    <span class="nm" style="font-family:'${f.name}', ${f.category}">${f.name}</span>
+    ${installedFont(f.name) ? '<span class="tag ok">Added</span>' : '<span class="tag add">+ Add</span>'}</div>`).join('')
+    : `<div class="font-empty">No match for “${q.replace(/[<>&"]/g, '')}”.<br>Press Enter to try that exact name on Google Fonts.</div>`;
+  loadFontPreviews(hits.map(f => f.name));
 }
-txFontBtn.onclick = () => { if (txFont.disabled) return; renderFontPop(); txFontPop.hidden = !txFontPop.hidden; };
+txFontBtn.onclick = () => { if (txFont.disabled) return; renderFontPop(); txFontPop.hidden = !txFontPop.hidden; if (!txFontPop.hidden) { txFontPop.scrollIntoView({ block: 'nearest' }); if (fontView !== 'installed') txFontGoogle.focus(); } };
 /* Add a font: a Google Fonts family by name, or a font file from disk. Either lands in the "My fonts"
    group (core registry), gets applied to the selected text, and text already on the canvas is
    re-measured so nothing keeps the fallback face's box. */
@@ -3377,19 +3469,29 @@ async function addFont(load, busyBtn) {
     renderFontPop();
     if (txFont.onchange) txFont.onchange();
     toast('Font added');
-  } catch (err) { toast(err.message || 'Could not add that font'); }
-  busyBtn.disabled = false;
+    return true;
+  } catch (err) { toast(err.message || 'Could not add that font'); return false; }
+  finally { busyBtn.disabled = false; }
 }
-const txFontGoogle = document.getElementById('tx-font-google'), txFontGoogleAdd = document.getElementById('tx-font-google-add');
 const txFontFile = document.getElementById('tx-font-file');
-const submitGoogleFont = () => { const n = txFontGoogle.value; if (n.trim()) addFont(() => addGoogleFont(n), txFontGoogleAdd).then(() => { txFontGoogle.value = ''; }); };
-txFontGoogleAdd.onclick = submitGoogleFont;
+const txFontUpload = document.getElementById('tx-font-upload');
+const resetFontSearch = () => { txFontGoogle.value = ''; fontView = 'installed'; renderFontPop(); };
+const submitGoogleFont = () => {
+  const q = txFontGoogle.value.trim(); if (!q) return;
+  const top = searchGoogleFonts(q, fontView === 'installed' ? 'all' : fontView, 1)[0];
+  addFont(() => addGoogleFont(top ? top.name : q), txFontUpload).then(ok => { if (ok) { txFontPop.hidden = true; resetFontSearch(); } });
+};
+document.getElementById('tx-font-chips').addEventListener('click', e => { const v = e.target.closest('button')?.dataset.v; if (v) { fontView = v; renderFontPop(); } });
+txFontGoogle.oninput = () => { if (txFontGoogle.value && fontView === 'installed') fontView = 'all'; renderFontPop(); };
+fontClear.onclick = () => { txFontGoogle.value = ''; renderFontPop(); txFontGoogle.focus(); };
 txFontGoogle.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') submitGoogleFont(); };   // typing here must not trigger tool hotkeys
 document.getElementById('tx-font-upload').onclick = () => txFontFile.click();
-txFontFile.onchange = () => { const f = txFontFile.files[0]; txFontFile.value = ''; if (f) addFont(() => addCustomFont(f), txFontGoogleAdd); };
+txFontFile.onchange = () => { const f = txFontFile.files[0]; txFontFile.value = ''; if (f) addFont(() => addCustomFont(f), txFontUpload); };
 restoreUserFonts().then(() => ed.refreshFonts());
+txFontPop.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('font-item')) { e.preventDefault(); e.target.click(); } });
 txFontPop.addEventListener('click', e => {
   const item = e.target.closest('.font-item'); if (!item) return;
+  if (item.dataset.gf) { addFont(() => addGoogleFont(item.dataset.gf), txFontUpload).then(ok => { if (ok) { txFontPop.hidden = true; resetFontSearch(); } }); return; }
   txFont.value = item.dataset.value;
   txFontCurrent.textContent = fontLabelFor(txFont.value);
   txFontCurrent.style.fontFamily = txFont.value;
@@ -3397,7 +3499,7 @@ txFontPop.addEventListener('click', e => {
   if (txFont.onchange) txFont.onchange();
 });
 document.addEventListener('click', e => {
-  if (!txFontPop.hidden && !txFontPop.contains(e.target) && e.target !== txFontBtn && !txFontBtn.contains(e.target)) txFontPop.hidden = true;
+  if (!txFontPop.hidden && e.target.isConnected && !txFontPop.contains(e.target) && e.target !== txFontBtn && !txFontBtn.contains(e.target)) txFontPop.hidden = true;
 });
 const txSize = document.getElementById('tx-size'), txWeight = document.getElementById('tx-weight');
 const txItalic = document.getElementById('tx-italic'), txUnderline = document.getElementById('tx-underline'), txStrike = document.getElementById('tx-strike');
@@ -4338,12 +4440,51 @@ function renderStickerGrid() {
 stickerCatsEl.addEventListener('click', e => {
   const i = +(e.target.closest('button')?.dataset.i ?? -1); if (i < 0) return;
   stickerCat = i; renderStickerCats(); renderStickerGrid();
+
 });
 stickerGridEl.addEventListener('click', e => {
   const key = e.target.closest('.sticker-thumb')?.dataset.key; if (!key) return;
   ed.addSticker(key);
 });
 renderStickerCats(); renderStickerGrid();
+
+/* Icon library (core/icons.js → Iconify): search → grid of mask-drawn thumbnails → click adds a vector layer. */
+const iconQ = document.getElementById('icon-q'), iconGrid = document.getElementById('icon-grid'), iconStatus = document.getElementById('icon-status');
+document.getElementById('icon-sugg').innerHTML = ICON_SUGGESTIONS.map(w => `<button class="chip" data-q="${w}">${w}</button>`).join('');
+let iconSeq = 0, iconTimer = 0;
+document.getElementById('icon-q-ico').innerHTML = iconSVG('search', 15);
+const iconClear = document.getElementById('icon-q-clear'); iconClear.innerHTML = iconSVG('close', 12);
+const stkSeg = document.getElementById('stk-seg');
+function showStickerView(v) {
+  stkSeg.querySelectorAll('.act').forEach(b => { b.dataset.on = String(b.dataset.v === v); b.setAttribute('aria-selected', b.dataset.v === v); });
+  document.getElementById('stk-shapes').hidden = v !== 'shapes'; document.getElementById('stk-icons').hidden = v !== 'icons';
+  if (v === 'icons') { loadStarterIcons(); iconQ.focus({ preventScroll: true }); }
+}
+stkSeg.addEventListener('click', e => { const v = e.target.closest('.act')?.dataset.v; if (v) showStickerView(v); });
+const skeleton = () => { iconGrid.innerHTML = Array(20).fill('<div class="skel"></div>').join(''); };
+async function runIconSearch(q) {
+  const seq = ++iconSeq; q = q.trim() || 'star';   // empty box → starter set, never a blank grid
+  iconClear.hidden = !iconQ.value;
+  iconStatus.textContent = 'Searching…'; skeleton();
+  try {
+    const ids = await searchIcons(q);
+    if (seq !== iconSeq) return;
+    iconStatus.textContent = ids.length ? ids.length + ' icons' : 'No icons found for “' + q.replace(/[<>&"]/g, '') + '” — try another word';
+    iconGrid.innerHTML = ids.map(id => `<button class="sticker-thumb" data-icon="${id}" title="${id.split(':')[1].replace(/-/g, ' ')}" aria-label="${id.split(':')[1].replace(/-/g, ' ')}"><span class="icon-glyph" style="--src:url('${iconUrl(id)}')"></span></button>`).join('');
+  } catch (err) { if (seq === iconSeq) { iconGrid.innerHTML = ''; iconStatus.textContent = 'Could not reach the icon library — check your connection.'; } }
+}
+let iconFirst = true;   // starter set loads the first time the Icons view opens, so the grid is never empty
+function loadStarterIcons() { if (iconFirst && !iconQ.value) { iconFirst = false; runIconSearch('star'); } }
+iconQ.addEventListener('input', () => { iconClear.hidden = !iconQ.value; clearTimeout(iconTimer); iconTimer = setTimeout(() => runIconSearch(iconQ.value), 300); });
+iconQ.addEventListener('keydown', e => e.stopPropagation());   // typing here must not trigger tool hotkeys
+iconClear.onclick = () => { iconQ.value = ''; iconClear.hidden = true; runIconSearch('star'); iconQ.focus(); };
+document.getElementById('icon-sugg').addEventListener('click', e => { const q = e.target.closest('.chip')?.dataset.q; if (q) { iconQ.value = q; runIconSearch(q); } });
+iconGrid.addEventListener('click', async e => {
+  const btn = e.target.closest('.sticker-thumb'); if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try { await ed.addIcon(btn.dataset.icon); } catch (err) { toast(err.message || 'Could not add that icon'); }
+  btn.disabled = false;
+});
 
 /* ── "more below" scroll cues — see #left-scroll-cue's CSS comment for why these exist. Right
    tracks whichever of its panel's tabs is the currently-visible scroll container (only one is

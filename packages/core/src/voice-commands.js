@@ -13,6 +13,7 @@
    used to make "half the features don't work by voice". Things the HOST owns (zoom, export, new
    document, theme, panels...) go through ctx.actions[name]; a shell that lacks one reports it. */
 
+import { searchIcons } from './icons.js';
 import { makeText, makeShape } from './shapes.js';
 import { STICKER_GROUPS } from './stickers.js';
 import { ADJUST_CONTROLS, FX_DEFAULTS } from './color.js';
@@ -464,6 +465,16 @@ cmd('addSticker', {
   doc: 'add a sticker/badge/arrow/burst: ' + stickerKeys.join(', '), args: { key: E(...stickerKeys) },
   say: [[/^(?:add|insert)(?: a| an| the)? (?:sticker )?(.+?)(?: sticker)?$/, (m) => { const k = STICKER_SAY[m[1]] || stickerKeys.find(x => x.toLowerCase() === m[1].replace(/\s+/g, '')); return k ? { key: k, name: m[1] } : null; }]], ex: ['add a heart', 'add sparkle sticker'],
   run: (ed, a) => { ed.addSticker(a.key); return `Added ${a.name || a.key}`; },
+});
+cmd('addIcon', {
+  doc: 'add an icon from the free icon library by keyword, e.g. "heart", "shopping cart", "camera"', args: { name: S(60) },
+  say: [[/^(?:add|insert)(?: a| an| the)? (.+?) icon$/, (m) => ({ name: m[1] })]], ex: ['add a heart icon'],
+  run: async (ed, a) => {
+    const ids = await searchIcons(a.name, 1);
+    if (!ids.length) throw new Error(`No icon found for "${a.name}"`);
+    await ed.addIcon(ids[0]);
+    return `Added ${a.name} icon`;
+  },
 });
 const adText = (id, doc, re, fn, label, ex, opts) => cmd(id, { doc, say: [[re, () => ({})]], ex: [ex], run: (ed) => { ed[fn](null, opts); return `Added ${label}`; } });
 adText('addCTA', 'add a call-to-action button', /^add (?:a |an )?(?:cta|call to action|button)(?: button)?$/, 'addCTA', 'CTA button', 'add a CTA button', { text: 'Shop now' });

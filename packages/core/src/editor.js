@@ -34,6 +34,7 @@ import { CvEngine, prepImageData } from './cv/client.js';
 import { makeMaskFilterClass, createMaskCanvas, maskStamp, maskLine, serializeMask, deserializeMask, invertMaskCanvas,
   isVectorMaskable, createVectorMaskCanvas, vectorMaskPoint, touchVectorMask, attachVectorMask } from './mask.js';
 import { BOOLEAN_OPS, BOOLEAN_LABEL, hasClipEngine, combinableReason, objectRings, combineRings, ringsToPathD } from './booleans.js';
+import { fetchIconSVG } from './icons.js';
 import { stickerSpec, STICKER_PALETTE, STICKER_DEFAULT_LABEL } from './stickers.js';
 import { makeCTA, makeBadge, makePrice, makeBrandLockup, AD_FACTORIES, AD_OPT_KEYS, deriveAdOpts } from './adtext.js';
 import { buildPromoLayout, buildLayerFromSpec } from './templates.js';
@@ -4328,6 +4329,25 @@ export class Editor {
     this.fc.add(obj);
     this.fc.setActiveObject(obj);
     this.commit('sticker');
+    return obj.id;
+  }
+
+  /* Library icon (icons.js, Iconify ids like "mdi:heart"): fetched as SVG and added as a vector
+     layer — a single Path, or a Group of paths for multi-part icons — scaled so its longer side is
+     `size` px and centred at `pt`. role 'shape', so Fill recolours it like any sticker. Resolves to
+     the new layer id, or null if the SVG had nothing drawable; rejects on a network failure. */
+  async addIcon(id, pt, size = 160) {
+    const svg = await fetchIconSVG(id, STICKER_PALETTE[0]);
+    const obj = await new Promise(resolve => {
+      this.fabric.loadSVGFromString(svg, (objs, opts) => resolve(objs && objs.length ? this.fabric.util.groupSVGElements(objs, opts) : null));
+    });
+    if (!obj) return null;
+    const center = pt || this.nextSpot();
+    const k = size / Math.max(obj.width || 1, obj.height || 1);
+    obj.set({ originX: 'center', originY: 'center', left: center.x, top: center.y, scaleX: k, scaleY: k, id: uid(), role: 'shape', name: 'Icon: ' + id.split(':')[1].replace(/-/g, ' ') });
+    this.fc.add(obj);
+    this.fc.setActiveObject(obj);
+    this.commit('icon');
     return obj.id;
   }
 

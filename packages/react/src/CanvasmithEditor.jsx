@@ -6,7 +6,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Editor, makeText, makeShape, layerTypeLabel, REGION_FILL_ALPHA, outlineRegion, ALL_TOOLS, PAINT_TOOLS, SEL_TOOLS, SHAPE_TOOLS, GeminiProvider, installBridge, installDropImport, imageLayerName, rankCommands, layerLabel, installKeybindings, installVoice, installColorPicker, trapDialog, mountBlendPicker, TOOL_KEYS,
-  selectionPolys, selectionToPath2D, FONT_GROUPS, FONT_STYLESHEET_URL, addGoogleFont, addCustomFont, restoreUserFonts, STICKER_GROUPS, STICKER_PALETTE, stickerSpec, stickerLabel, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME, relLum, hexRgb, rgba, splitGradientStopColor,
+  selectionPolys, selectionToPath2D, FONT_GROUPS, FONT_STYLESHEET_URL, addGoogleFont, addCustomFont, restoreUserFonts, searchGoogleFonts, loadFontPreviews, searchIcons, iconUrl, ICON_SUGGESTIONS, STICKER_GROUPS, STICKER_PALETTE, stickerSpec, stickerLabel, STICKER_DEFAULT_LABEL, REGION_COLOR, REGION_NAME, relLum, hexRgb, rgba, splitGradientStopColor,
   startSelection, updateSelection, finalizeSelection, startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild, snapToEdge, selectionBounds,
   installAutosave, restoreSession, readSession, DocumentSet, MAX_DOCS, discardToTrash, restoreDiscarded, exportProject, loadProject,
   FX_DEFAULTS, ADJUST_CONTROLS, formatAdjustValue, GEOMETRY_DEFAULTS, GEOMETRY_CONTROLS, formatGeometryValue,
@@ -294,19 +294,28 @@ function MatchColorRow({ editor, layerId, layers, match }) {
 
 /* Typography font picker (demo #tx-font-btn / renderFontPop): a button showing the current face in
    itself, opening a grouped list where every row previews its font with an "Ag" specimen. */
+const FONT_VIEWS = [['installed', 'My fonts'], ['all', 'All'], ['sans-serif', 'Sans'], ['serif', 'Serif'], ['display', 'Display'], ['monospace', 'Mono']];
 function FontPicker({ value, onPick, onAdded, onError }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [gname, setGname] = useState('');
+  const [view, setView] = useState('installed');   // 'installed' = My fonts, else a Google Fonts catalog slice
   const [, bump] = useState(0);   // FONT_GROUPS is a mutable registry — re-render after adding to it
   const fileRef = useRef(null);
   const add = async (load) => {
     setBusy(true);
-    try { const css = await load(); bump(n => n + 1); onAdded(css); setGname(''); }
+    try { const css = await load(); bump(n => n + 1); onAdded(css); setGname(''); setView('installed'); setOpen(false); }
     catch (err) { onError(err.message || 'Could not add that font'); }
     setBusy(false);
   };
+  const catalog = view !== 'installed';
+  const hits = catalog ? searchGoogleFonts(gname, view, 50) : [];
+  const hitKey = hits.map(f => f.name).join('|');
+  useEffect(() => { if (hitKey) loadFontPreviews(hitKey.split('|')).then(() => bump(n => n + 1)); }, [hitKey]);
+  const isInstalled = (n) => FONT_GROUPS.some(g => g.fonts.some(([l]) => l.toLowerCase() === n.toLowerCase()));
   const ref = useRef(null);
+  const popRef = useRef(null);
+  useEffect(() => { if (open && popRef.current) popRef.current.scrollIntoView({ block: 'nearest' }); }, [open]);
   useEffect(() => {
     if (!open) return;
     const off = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
@@ -315,29 +324,49 @@ function FontPicker({ value, onPick, onAdded, onError }) {
   }, [open]);
   let label = value || 'Choose a font…';
   for (const g of FONT_GROUPS) { const f = g.fonts.find(([, v]) => v === value); if (f) { label = f[0]; break; } }
+  const rowKey = (fn) => (e) => { if (e.key === 'Enter') { e.preventDefault(); fn(); } };
   return (
     <div className="cm-font-anchor" ref={ref}>
       <button className="cm-btn" style={{ width: '100%', justifyContent: 'space-between' }} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen(o => !o)}>
         <span style={{ fontFamily: value, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span><Icon name="chevronD" size={12} />
       </button>
       {open && (
-        <div className="cm-font-pop" role="listbox">
-          {FONT_GROUPS.map(g => (
-            <React.Fragment key={g.label}>
-              <div className="cm-font-grp-label">{g.label}</div>
-              {g.fonts.map(([l, v]) => (
-                <div key={v} className="cm-font-item" role="option" aria-selected={v === value} data-on={v === value}
-                  onClick={() => { onPick(v); setOpen(false); }}>
-                  <span className="nm" style={{ fontFamily: v }}>{l}</span><span className="ag" style={{ fontFamily: v }}>Ag</span>
-                </div>
+        <div className="cm-font-pop" ref={popRef}>
+          <div className="cm-fp-head">
+            <div className="cm-fp-search">
+              <span className="ico"><Icon name="search" size={14} /></span>
+              <input type="text" value={gname} placeholder="Search Google Fonts" aria-label="Search Google Fonts" spellCheck={false} autoComplete="off" autoFocus={catalog}
+                onChange={e => { setGname(e.target.value); if (e.target.value && !catalog) setView('all'); }}
+                onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' && gname.trim() && !busy) add(() => addGoogleFont(hits[0] ? hits[0].name : gname)); }} />
+              {gname && <button type="button" className="cm-fp-clear" aria-label="Clear search" onClick={() => setGname('')}><Icon name="close" size={11} /></button>}
+            </div>
+            <div className="cm-fp-chips" role="tablist">
+              {FONT_VIEWS.map(([v, l]) => <button key={v} type="button" role="tab" aria-selected={view === v} data-on={view === v} onClick={() => setView(v)}>{l}</button>)}
+            </div>
+          </div>
+          <div className="cm-fp-list" role="listbox">
+            {catalog ? (hits.length ? hits.map(f => (
+              <div key={f.name} className="cm-font-item" role="option" aria-selected={false} tabIndex={0}
+                onClick={() => !busy && add(() => addGoogleFont(f.name))} onKeyDown={rowKey(() => !busy && add(() => addGoogleFont(f.name)))}>
+                <span className="nm" style={{ fontFamily: "'" + f.name + "', " + f.category }}>{f.name}</span>
+                {isInstalled(f.name) ? <span className="tag ok">Added</span> : <span className="tag add">+ Add</span>}
+              </div>
+            )) : <div className="cm-font-empty">No match for “{gname.trim()}”.<br />Press Enter to try that exact name on Google Fonts.</div>)
+              : FONT_GROUPS.map(g => (
+                <React.Fragment key={g.label}>
+                  <div className="cm-font-grp-label">{g.label}</div>
+                  {g.fonts.map(([l, v]) => (
+                    <div key={v} className="cm-font-item" role="option" aria-selected={v === value} data-on={v === value} tabIndex={0}
+                      onClick={() => { onPick(v); setOpen(false); }} onKeyDown={rowKey(() => { onPick(v); setOpen(false); })}>
+                      <span className="nm" style={{ fontFamily: v }}>{l}</span><span className="ag" style={{ fontFamily: v }}>Ag</span>
+                    </div>
+                  ))}
+                </React.Fragment>
               ))}
-            </React.Fragment>
-          ))}
-          <div className="cm-font-add">
-            <input type="text" value={gname} placeholder="Google font name, e.g. Space Grotesk" spellCheck={false} autoComplete="off"
-              onChange={e => setGname(e.target.value)} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' && gname.trim()) add(() => addGoogleFont(gname)); }} />
-            <button className="cm-btn" type="button" disabled={busy || !gname.trim()} onClick={() => add(() => addGoogleFont(gname))}>Add</button>
-            <button className="cm-btn" type="button" disabled={busy} title="Upload .ttf, .otf, .woff or .woff2" onClick={() => fileRef.current && fileRef.current.click()}>Upload font…</button>
+          </div>
+          <div className="cm-fp-foot">
+            <button type="button" disabled={busy} title="Upload .ttf, .otf, .woff or .woff2" onClick={() => fileRef.current && fileRef.current.click()}><Icon name="plus" size={13} />Upload font file</button>
+            <span>.ttf · .otf · .woff</span>
             <input ref={fileRef} type="file" accept=".ttf,.otf,.woff,.woff2" hidden
               onChange={e => { const f = e.target.files[0]; e.target.value = ''; if (f) add(() => addCustomFont(f)); }} />
           </div>
@@ -354,6 +383,59 @@ function Icon({ name, size = 15, style }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={style}
       dangerouslySetInnerHTML={{ __html: html }} />
+  );
+}
+
+/* Free icon library (core/icons.js → Iconify): debounced search, mask-drawn thumbnails that follow the
+   theme colour, click to add as a recolourable vector layer. */
+function IconLibrary({ getEditor, onError }) {
+  const [q, setQ] = useState('');
+  const [ids, setIds] = useState([]);
+  const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  useEffect(() => {
+    const term = q.trim() || 'star';   // empty box → starter set, never a blank grid
+    let live = true;
+    const t = setTimeout(async () => {
+      setLoading(true); setStatus('Searching\u2026');
+      try { const r = await searchIcons(term); if (!live) return; setIds(r); setStatus(r.length ? r.length + ' icons' : 'No icons found for \u201c' + term + '\u201d \u2014 try another word'); }
+      catch (e) { if (live) { setIds([]); setStatus('Could not reach the icon library \u2014 check your connection.'); } }
+      if (live) setLoading(false);
+    }, q ? 300 : 0);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+  const add = async (id) => {
+    const ed = getEditor(); if (!ed || busyId) return;
+    setBusyId(id);
+    try { await ed.addIcon(id); } catch (e) { onError(e.message || 'Could not add that icon'); }
+    setBusyId('');
+  };
+  return (
+    <div>
+      <div className="cm-icon-search">
+        <span className="ico"><Icon name="search" size={15} /></span>
+        <input className="cm-icon-q" type="text" value={q} placeholder="Search 200,000+ free icons" aria-label="Search icons" spellCheck={false} autoComplete="off"
+          onChange={e => setQ(e.target.value)} onKeyDown={e => e.stopPropagation()} />
+        {q && <button type="button" className="cm-icon-clear" aria-label="Clear search" onClick={() => setQ('')}><Icon name="close" size={12} /></button>}
+      </div>
+      <div className="cm-icon-sugg">
+        {ICON_SUGGESTIONS.map(w => <button key={w} className="cm-chip" data-on={q.trim().toLowerCase() === w} onClick={() => setQ(w)}>{w}</button>)}
+      </div>
+      <div className="cm-icon-meta"><span role="status">{status}</span><span className="cm-icon-credit">Free · Iconify</span></div>
+      <div className="cm-icon-grid">
+        {loading
+          ? Array.from({ length: 20 }, (_, i) => <div key={i} className="cm-icon-skel" />)
+          : ids.map(id => {
+            const nm = id.split(':')[1].replace(/-/g, ' ');
+            return (
+              <button key={id} className="cm-sticker-thumb" title={nm} aria-label={nm} disabled={!!busyId} onClick={() => add(id)}>
+                <span className="cm-icon-glyph" style={{ '--src': "url('" + iconUrl(id) + "')" }} />
+              </button>
+            );
+          })}
+      </div>
+    </div>
   );
 }
 
@@ -1069,16 +1151,38 @@ const CSS = `
 .cm-props-footer b[data-locked=false]{color:var(--cm-ai-green)}
 .cm-props-footer b[data-locked=true]{color:#f5a524}
 .cm-font-anchor{position:relative}
-.cm-font-pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:60;max-height:280px;overflow-y:auto;padding:6px;background:var(--cm-panel-2);border:1px solid var(--cm-line);border-radius:12px;box-shadow:var(--cm-shadow-md)}
+.cm-font-pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:60;max-height:430px;display:flex;flex-direction:column;padding:0;background:var(--cm-panel-2);border:1px solid var(--cm-line);border-radius:12px;box-shadow:var(--cm-shadow-md);overflow:hidden}
 .cm-font-grp-label{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--cm-dim-2);padding:8px 8px 4px}
 .cm-font-grp-label:first-child{padding-top:2px}
 .cm-font-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 9px;border-radius:7px;cursor:pointer;font-size:14px;color:var(--cm-ink)}
 .cm-font-item:hover,.cm-font-item[data-on=true]{background:var(--cm-bg)}
-.cm-font-add{position:sticky;bottom:-6px;display:flex;flex-wrap:wrap;gap:6px;margin:6px -6px -6px;padding:8px 6px 6px;border-top:1px solid var(--cm-line);background:var(--cm-panel-2)}
-.cm-font-add input[type=text]{flex:1 1 120px;min-width:0;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:7px;padding:6px 8px;font-size:12px;color:var(--cm-ink)}
-.cm-font-add .cm-btn{flex:none;padding:6px 10px;font-size:12px}
-.cm-font-add .cm-btn[disabled]{opacity:.5;pointer-events:none}
 .cm-font-item .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-font-item .tag{flex:none;font-size:10px;color:var(--cm-dim-2);letter-spacing:.04em;text-transform:uppercase}
+.cm-font-empty{padding:18px 14px;font-size:12px;color:var(--cm-dim);text-align:center;line-height:1.5}
+.cm-font-item{margin:0 6px}
+.cm-font-grp-label{padding:10px 14px 4px}
+.cm-font-item .tag{display:flex;align-items:center;gap:4px;font-size:11px;letter-spacing:0;text-transform:none}
+.cm-font-item .tag.add{color:var(--cm-accent);opacity:0;font-weight:600}
+.cm-font-item:hover .tag.add,.cm-font-item:focus-visible .tag.add{opacity:1}
+.cm-font-item .tag.ok{color:var(--cm-dim)}
+.cm-fp-head{flex:none;padding:10px 10px 6px;border-bottom:1px solid var(--cm-line)}
+.cm-fp-search{position:relative;margin-bottom:8px}
+.cm-fp-search .ico{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--cm-dim-2);display:flex;pointer-events:none}
+.cm-font-pop .cm-fp-search input[type=text]{width:100%;box-sizing:border-box;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:8px;padding:8px 30px 8px 32px;font-size:12.5px;color:var(--cm-ink);outline:none}
+.cm-font-pop .cm-fp-search input[type=text]:focus{border-color:var(--cm-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 22%,transparent)}
+.cm-fp-search input::placeholder{color:var(--cm-dim-2)}
+.cm-fp-clear{all:unset;position:absolute;right:6px;top:50%;transform:translateY(-50%);width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;color:var(--cm-dim)}
+.cm-fp-clear:hover{background:var(--cm-panel-2);color:var(--cm-ink)}
+.cm-fp-chips{display:flex;gap:4px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+.cm-fp-chips::-webkit-scrollbar{display:none}
+.cm-fp-chips button{all:unset;flex:none;cursor:pointer;padding:4px 10px;border-radius:6px;font-size:11.5px;font-weight:500;color:var(--cm-dim)}
+.cm-fp-chips button:hover{color:var(--cm-ink);background:var(--cm-bg)}
+.cm-fp-chips button[data-on=true]{background:var(--cm-accent-fill,var(--cm-accent));color:var(--cm-accent-ink);font-weight:600}
+.cm-fp-list{overflow-y:auto;flex:1;min-height:140px;padding:6px 0}
+.cm-fp-foot{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-top:1px solid var(--cm-line);font-size:10.5px;color:var(--cm-dim-2)}
+.cm-fp-foot button{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--cm-ink);padding:4px 6px;margin:-4px -6px;border-radius:6px}
+.cm-fp-foot button:hover{background:var(--cm-bg)}
+.cm-fp-foot button[disabled]{opacity:.5;pointer-events:none}
 .cm-font-item .ag{flex:none;font-size:13px;color:var(--cm-dim-2)}
 .cm-hdiv{width:1px;height:20px;background:var(--cm-line);flex:none}
 .cm-top > strong{font-family:"Bricolage Grotesque",inherit,sans-serif;font-size:14px!important;font-weight:700;letter-spacing:-.02em;flex:none}
@@ -1149,6 +1253,26 @@ const CSS = `
 .cm-sticker-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .cm-sticker-thumb{all:unset;box-sizing:border-box;cursor:pointer;aspect-ratio:1;border-radius:9px;border:1px solid var(--cm-line);background:var(--cm-bg);display:flex;align-items:center;justify-content:center;padding:10px;color:var(--cm-dim);transition:border-color .1s,background .1s}
 .cm-sticker-thumb:hover{border-color:var(--cm-dim-2);background:var(--cm-panel-2)}
+.cm-icon-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
+.cm-icon-grid .cm-sticker-thumb{padding:9px;border-color:transparent;background:var(--cm-ctl,var(--cm-bg));border-radius:8px}
+.cm-icon-grid .cm-sticker-thumb:hover{border-color:var(--cm-accent);background:var(--cm-panel-2)}
+.cm-icon-skel{aspect-ratio:1;border-radius:8px;background:linear-gradient(100deg,var(--cm-bg) 30%,var(--cm-panel-2) 50%,var(--cm-bg) 70%);background-size:300% 100%;animation:cm-icon-shimmer 1.1s linear infinite}
+@keyframes cm-icon-shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
+.cm-icon-search{position:relative;margin-bottom:10px}
+.cm-icon-search .ico{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--cm-dim-2);display:flex;pointer-events:none}
+.cm-icon-q{width:100%;box-sizing:border-box;background:var(--cm-bg);border:1px solid var(--cm-line);border-radius:9px;padding:10px 34px;font-size:13px;color:var(--cm-ink);outline:none}
+.cm-icon-q:focus{border-color:var(--cm-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--cm-accent) 22%,transparent)}
+.cm-icon-q::placeholder{color:var(--cm-dim-2)}
+.cm-icon-clear{all:unset;position:absolute;right:7px;top:50%;transform:translateY(-50%);width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;color:var(--cm-dim)}
+.cm-icon-clear:hover{background:var(--cm-panel-2);color:var(--cm-ink)}
+.cm-icon-sugg{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px;scrollbar-width:none;-webkit-mask:linear-gradient(90deg,#000 88%,transparent);mask:linear-gradient(90deg,#000 88%,transparent)}
+.cm-icon-sugg::-webkit-scrollbar{display:none}
+.cm-icon-sugg .cm-chip{flex:none;text-transform:capitalize}
+.cm-icon-meta{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;color:var(--cm-dim);margin-bottom:8px;min-height:16px}
+.cm-icon-credit{color:var(--cm-dim-2);font-size:10.5px}
+.cm-icon-glyph{display:block;width:100%;height:100%;background:var(--cm-dim);-webkit-mask:var(--src) center/contain no-repeat;mask:var(--src) center/contain no-repeat}
+.cm-sticker-thumb:hover .cm-icon-glyph{background:var(--cm-ink)}
+.cm-sticker-thumb[disabled]{opacity:.5;pointer-events:none}
 .cm-sticker-thumb svg{width:100%;height:100%}
 .cm-ai-card-title{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:700;color:var(--cm-ink)}
 .cm-ai-card p{margin:8px 0 0;font-size:12px;color:var(--cm-dim);line-height:1.55}
@@ -2580,6 +2704,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
   // ── Design tab: canvas-level background/fill tools and add-element shortcuts ────────────
   const [designBusy, setDesignBusy] = useState(false);
   const [stickerCat, setStickerCat] = useState(0);
+  const [stickerView, setStickerView] = useState('shapes');
   // Design ▸ Add element: Text / Box / Circle land centred and selected right away (demo #add-text etc.)
   const addCentred = (kind) => {
     const e = ed(), at = e.nextSpot();
@@ -4549,7 +4674,11 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
 
             {sideTab === 'stickers' && (
               <div>
-                <div className="cm-grp" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>Stickers</div>
+                <div className="cm-seg" role="tablist" style={{ marginBottom: 12 }}>
+                  <button className="cm-btn" role="tab" aria-selected={stickerView === 'shapes'} data-on={stickerView === 'shapes'} onClick={() => setStickerView('shapes')}>Shapes</button>
+                  <button className="cm-btn" role="tab" aria-selected={stickerView === 'icons'} data-on={stickerView === 'icons'} onClick={() => setStickerView('icons')}>Icons</button>
+                </div>
+                {stickerView === 'icons' ? <IconLibrary getEditor={ed} onError={toast} /> : (<>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
                   {STICKER_GROUPS.map((g, i) => (
                     <button key={g.label} className="cm-chip" data-on={i === stickerCat} onClick={() => setStickerCat(i)}>{g.label}</button>
@@ -4562,6 +4691,7 @@ export function CanvasmithEditor({ fabric, width = 1080, height = 1080, image = 
                     </button>
                   ))}
                 </div>
+                </>)}
               </div>
             )}
 

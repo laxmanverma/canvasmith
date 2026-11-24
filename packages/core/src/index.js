@@ -12,6 +12,8 @@ export {
   selectionPolys, polysToSelection, addPolyToSelection, selectionBounds, HoverCache,
 } from './selection.js';
 export { makeShape, makeText, layerLabel, describeLayer, layerTypeLabel, isContainerGroup, starPoints, uid, FONT_GROUPS, FONT_STYLESHEET_URL, MATCH_FONTS, fontCss } from './shapes.js';
+export { ICON_PREFIXES, ICON_SUGGESTIONS, isIconId, iconUrl, searchIcons, fetchIconSVG } from './icons.js';
+export { GOOGLE_FONT_CATALOG, GOOGLE_FONT_CATEGORIES, searchGoogleFonts, loadFontPreviews } from './fontcatalog.js';
 export { addGoogleFont, addCustomFont, restoreUserFonts, removeUserFont } from './fonts.js';
 export { makeCTA, makeBadge, makePrice, makeBrandLockup, autoFitText, applyLegibilityShadow } from './adtext.js';
 export { buildLayerFromSpec, buildPromoLayout, scrimFill } from './templates.js';
